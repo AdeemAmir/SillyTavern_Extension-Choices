@@ -1,0 +1,9 @@
+{
+    "display_name": "Narrative Choice Stream",
+    "loading_order": 0,
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Gemini AI",
+    "version": "1.2.0",
+    "auto_update": true
+}
