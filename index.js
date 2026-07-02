@@ -1,32 +1,67 @@
+import {
+    eventSource,
+    event_types,
+    generateQuietPrompt
+} from '../../../../script.js';
+
+import {
+    getContext
+} from '../../../extensions.js';
+
 (function () {
     const MODULE_NAME = "st_choice_stream";
+    const context = getContext();
+    if (!context) return;
+
+    let isGenerating = false;
+
+    const MD_JSON_START = ['\x60', '\x60', '\x60', 'json'].join('');
+    const MD_END = ['\x60', '\x60', '\x60'].join('');
     
-    // 1. Robust Context Fetching
-    const context = window.SillyTavern?.getContext?.();
-    if (!context) {
-        console.error("[Choices Ext] SillyTavern context not found. Is the extension in the correct folder?");
-        return;
-    }
-    const { eventSource, event_types } = context;
+    const REGEX_AGGRESSIVE_JSON = /"choice"\s*:\s*"((?:\\.|[^"\\])*)"/gi;
+    const REGEX_DEBRIS = /^([,\]\s\:]+)|([,\[\s\:]+)$/g;
+    const REGEX_LIST_MARKERS = /^[-•.*\s\d]+\.\s+/;
+    const REGEX_FALLBACK_LIST = /^[-•.*\s\d]+[\.\:\)]?\s+/;
+
+    const defaultPrompts = {
+        userStyleTemplate: "### USER STYLE REFERENCE ###\n{{user_messages}}\n#####################",
+        instructionPrompt: `[System Note: TASK: Analyze the story context, the summary, and the User Style Reference.\n\n{{style_block}}\n\n{{matrix_block}}\n\nCRITICAL RULE: Output ONLY a JSON array of objects with the key "choice". You MUST wrap your output in a ${MD_JSON_START} codeblock. Do not write anything before the codeblock. Open the codeblock immediately, even if prompted to speak as a character.]`,
+        defaultMatrix: [
+            { range: "1-2", text: "Generic, logical, safe continuations." },
+            { range: "3-4", text: "Tailored specifically to match the tone, vocabulary, and personality seen in the User Style Reference." },
+            { range: "5", text: "A wildcard, random, or highly unexpected scenario shift." }
+        ]
+    };
 
     let settings = {
         enabled: true,
-        debugMode: 1,
-        numOptions: 4,
+        includeSummary: true,
+        useUserStyle: true,
+        dynamicMatrix: true,
+        skipInterrupted: true,
+        debugMode: 2,           
+        numOptions: 5,
+        contextDepth: 6,
+        generationDelay: 0,     
         layout: "column",
         position: "bottom",
-        offset_top: 0,
-        offset_bottom: 60,
-        offset_left: 10,
-        offset_right: 10,
-        systemPrompt: "Generate a JSON array of {{numOptions}} short action choices based on the narrative. Output ONLY raw JSON: [\"Choice 1\", \"Choice 2\"]"
+        offset_top: 10,
+        offset_bottom: 50,
+        widget_left: '40%',
+        widget_top: '40%',
+        widget_bottom: '',
+        userStyleTemplate: defaultPrompts.userStyleTemplate,
+        instructionPrompt: defaultPrompts.instructionPrompt,
+        matrix: JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix))
     };
 
     let choiceContainer = null;
     let isInputManuallyEdited = false;
     let lastInsertedText = "";
+    let wasInterrupted = false;
+    let DOM_textarea = null; 
+    let formObserver = null;
 
-    // --- Logger ---
     function log(text, level = 1) {
         if (settings.debugMode >= level) {
             console.log(`%c[ST-Choices] ${text}`, level === 2 ? 'color: #8b5cf6;' : 'color: #10b981; font-weight: bold;');
@@ -36,188 +71,780 @@
     function loadSettings() {
         if (context.extensionSettings[MODULE_NAME]) {
             settings = Object.assign(settings, context.extensionSettings[MODULE_NAME]);
+            if (!settings.instructionPrompt) settings.instructionPrompt = defaultPrompts.instructionPrompt;
+            if (!settings.userStyleTemplate) settings.userStyleTemplate = defaultPrompts.userStyleTemplate;
+            if (!settings.matrix) settings.matrix = JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix));
+            
+            if (!settings.widget_left) settings.widget_left = '40%';
+            if (!settings.widget_top && !settings.widget_bottom) settings.widget_top = '40%';
         }
     }
 
-    // --- Initialization ---
-    async function init() {
-        log("Booting Extension Engine...");
-        loadSettings();
-        setupInputTracker();
-        registerSlashCommand();
+    function updateContainerPosition() {
+        if (!choiceContainer) return;
+        let targetParent = null;
         
-        // Use a persistent interval to ensure the menu renders even if the DOM is slow
-        const menuRetry = setInterval(() => {
-            if (renderSettingsMenu()) {
-                log("Settings Menu injected successfully.");
-                clearInterval(menuRetry);
+        if (settings.position === "bottom") {
+            targetParent = document.getElementById('nonQRFormItems') || document.getElementById('send_form') || document.getElementById('form_sheld');
+            if (targetParent) {
+                choiceContainer.style.bottom = `calc(100% + ${parseInt(settings.offset_bottom || 50)}px)`;
+                choiceContainer.style.top = 'auto';
             }
+        } else {
+            targetParent = document.getElementById('top-settings-holder') || document.getElementById('top-bar');
+            if (targetParent) {
+                choiceContainer.style.top = `calc(100% + ${parseInt(settings.offset_top || 10)}px)`;
+                choiceContainer.style.bottom = 'auto';
+            }
+        }
+        
+        if (targetParent && choiceContainer.parentElement !== targetParent) {
+            targetParent.appendChild(choiceContainer);
+        }
+    }
+
+    async function init() {
+        log("Booting Concurrency-Locked Matrix Engine...", 1);
+        loadSettings();
+        
+        setTimeout(() => {
+            DOM_textarea = document.getElementById("send_textarea");
+            setupInputTracker();
+            buildFloatingWidget();
+            
+            const sendForm = document.getElementById('send_form') || document.getElementById('form_sheld');
+            if (sendForm && window.ResizeObserver) {
+                formObserver = new ResizeObserver(() => updateContainerPosition());
+                formObserver.observe(sendForm);
+            }
+            window.addEventListener('resize', updateContainerPosition);
+        }, 2000); 
+        
+        const bootRetry = setInterval(() => {
+            if (renderSettingsMenu() && addMagicWandButton()) clearInterval(bootRetry);
         }, 1000);
 
-        // Events
-        eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, () => {
-            log("AI Message detected. Auto-generating...", 2);
-            if (settings.enabled) triggerGeneration();
+        eventSource.on('generation_stopped', (type) => { 
+            if (type === 'quiet' || type === 'background') return;
+            wasInterrupted = true; 
+        });
+
+        eventSource.on(event_types.GENERATION_STARTED, (type) => { 
+            if (type === 'quiet' || type === 'background') return;
+            wasInterrupted = false; 
+            clearUI(); 
+        });
+        
+        eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, async () => {
+            const chat = context.chat;
+            if (chat && chat.length > 0) {
+                const lastMsg = chat[chat.length - 1];
+                if (lastMsg.is_system) return; 
+            }
+
+            if (settings.enabled && (!settings.skipInterrupted || !wasInterrupted)) {
+                const delayMs = Math.max(600, settings.generationDelay * 1000);
+                log(`Yielding ${delayMs}ms to ST main thread...`, 1);
+                await new Promise(r => setTimeout(r, delayMs));
+                await triggerGeneration(false);
+            }
         });
         
         eventSource.on(event_types.MESSAGE_SENT, clearUI);
-        eventSource.on(event_types.GENERATION_STARTED, clearUI);
-        
-        log("Hooks Attached. Ready for AI response or /choices command.");
     }
 
     function setupInputTracker() {
-        const textarea = document.getElementById("send_textarea");
-        if (!textarea) return;
-        textarea.addEventListener("input", () => {
-            isInputManuallyEdited = (textarea.value.trim() !== "" && textarea.value !== lastInsertedText);
+        if (!DOM_textarea) return;
+        DOM_textarea.addEventListener("input", () => {
+            isInputManuallyEdited = (DOM_textarea.value.trim() !== "" && DOM_textarea.value !== lastInsertedText);
         });
     }
 
-    function registerSlashCommand() {
-        if (context.slashCommandParser) {
-            context.slashCommandParser.addCommandObject({
-                command: "choices",
-                callback: () => { log("Slash command triggered."); triggerGeneration(); },
-                helpString: "Generates narrative choices."
-            });
+    function buildFloatingWidget() {
+        if (document.getElementById('cs_floating_widget')) return;
+
+        const widget = document.createElement('div');
+        widget.id = 'cs_floating_widget';
+        widget.style.left = settings.widget_left;
+        if (settings.widget_top) widget.style.top = settings.widget_top;
+        if (settings.widget_bottom) widget.style.bottom = settings.widget_bottom;
+
+        widget.innerHTML = `
+            <div id="cs_widget_btn" title="Drag to move. Click to generate.">
+                <i class="fa-solid fa-code-branch"></i>
+            </div>
+            <div id="cs_widget_panel">
+                <input type="text" id="cs_widget_input" placeholder="Custom direction (optional)..." autocomplete="off">
+                <button class="cs_widget_action" id="cs_widget_go" title="Generate Choices"><i class="fa-solid fa-play"></i></button>
+                <button class="cs_widget_action" id="cs_widget_close" title="Close Panel"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+        `;
+        document.body.appendChild(widget);
+
+        const btn = document.getElementById('cs_widget_btn');
+        const panel = document.getElementById('cs_widget_panel');
+        const input = document.getElementById('cs_widget_input');
+        const goBtn = document.getElementById('cs_widget_go');
+        const closeBtn = document.getElementById('cs_widget_close');
+
+        let isDragging = false;
+        let startX, startY;
+
+        function onDragStart(e) {
+            startX = e.clientX || (e.touches ? e.touches[0].clientX : 0);
+            startY = e.clientY || (e.touches ? e.touches[0].clientY : 0);
+            isDragging = false;
+
+            document.addEventListener('mousemove', onDragMove);
+            document.addEventListener('touchmove', onDragMove, { passive: false });
+            document.addEventListener('mouseup', onDragEnd);
+            document.addEventListener('touchend', onDragEnd);
         }
+
+        function onDragMove(e) {
+            let currentX = e.clientX || (e.touches ? e.touches[0].clientX : 0);
+            let currentY = e.clientY || (e.touches ? e.touches[0].clientY : 0);
+
+            if (Math.abs(currentX - startX) > 5 || Math.abs(currentY - startY) > 5) {
+                isDragging = true;
+            }
+            if (isDragging) {
+                if (e.cancelable) e.preventDefault(); 
+                widget.style.bottom = 'auto'; 
+                widget.style.right = 'auto';
+                widget.style.left = (widget.offsetLeft + (currentX - startX)) + 'px';
+                widget.style.top = (widget.offsetTop + (currentY - startY)) + 'px';
+                startX = currentX;
+                startY = currentY;
+            }
+        }
+
+        function onDragEnd() {
+            document.removeEventListener('mousemove', onDragMove);
+            document.removeEventListener('touchmove', onDragMove);
+            document.removeEventListener('mouseup', onDragEnd);
+            document.removeEventListener('touchend', onDragEnd);
+            
+            if (!isDragging) {
+                if (panel.classList.contains('is-open')) {
+                    panel.classList.remove('is-open');
+                } else {
+                    panel.classList.add('is-open');
+                    input.focus(); 
+                }
+            } else {
+                settings.widget_left = widget.style.left;
+                settings.widget_top = widget.style.top;
+                settings.widget_bottom = ''; 
+                save();
+            }
+        }
+
+        btn.addEventListener('mousedown', onDragStart);
+        btn.addEventListener('touchstart', onDragStart, { passive: true });
+
+        function submitGeneration() {
+            panel.classList.remove('is-open');
+            const direction = input.value;
+            input.value = ''; 
+            clearUI();
+            triggerGeneration(false, direction);
+        }
+
+        goBtn.onclick = submitGeneration;
+        closeBtn.onclick = () => panel.classList.remove('is-open');
+        input.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                submitGeneration();
+            }
+        });
     }
 
-    // --- UI Logic ---
-    async function triggerGeneration(isTest = false) {
+    function addMagicWandButton() {
+        const wandMenu = document.getElementById("extensionsMenu");
+        if (!wandMenu || document.getElementById("cs_wand_btn")) return !!document.getElementById("cs_wand_btn"); 
+
+        const btn = document.createElement("div");
+        btn.id = "cs_wand_btn";
+        btn.className = "list-group-item flex-container flexGap5 interactable";
+        btn.onclick = (e) => { 
+            e.stopPropagation(); 
+            $("#extensionsMenu").hide(); 
+            clearUI(); 
+            triggerGeneration(false); 
+        };
+        btn.innerHTML = `<div class="fa-fw fa-solid fa-list-ul extensionsMenuExtensionButton"></div><span>Generate Story Choices</span>`;
+        
+        const listGroup = wandMenu.querySelector('.list-group') || wandMenu;
+        listGroup.prepend(btn);
+        return true;
+    }
+
+    function parseRangeString(str, maxOptions = 999) {
+        let indices = new Set();
+        let parts = String(str || "").split(',');
+        for (let p of parts) {
+            p = p.trim();
+            if (p.includes('-')) {
+                let [s, e] = p.split('-').map(Number);
+                if (!isNaN(s) && !isNaN(e)) {
+                    let min = Math.min(s, e);
+                    let max = Math.max(s, e);
+                    for (let i = min; i <= max; i++) {
+                        if (i <= maxOptions && i > 0) indices.add(i);
+                    }
+                }
+            } else {
+                let n = Number(p);
+                if (!isNaN(n) && n <= maxOptions && n > 0) indices.add(n);
+            }
+        }
+        return Array.from(indices).sort((a, b) => a - b);
+    }
+
+    function getResolvedMatrix(maxOptions, bypass = false) {
+        if (bypass) return []; 
+        let assigned = new Set();
+        let resolvedRules = [];
+        
+        if (!settings.dynamicMatrix || !settings.matrix || settings.matrix.length === 0) return resolvedRules;
+
+        settings.matrix.forEach(rule => {
+            let targets = [];
+            let parsedIndices = parseRangeString(rule.range, maxOptions);
+            
+            parsedIndices.forEach(i => {
+                if (!assigned.has(i)) {
+                    assigned.add(i);
+                    targets.push(i);
+                }
+            });
+            
+            if (targets.length > 0) {
+                let ruleText = rule.text;
+                if (!settings.useUserStyle) {
+                    ruleText = ruleText.replace(/the User Style Reference/gi, "the current narrative tone and context");
+                    ruleText = ruleText.replace(/User Style Reference/gi, "the narrative tone");
+                }
+                resolvedRules.push({ targets: targets, text: ruleText });
+            }
+        });
+        return resolvedRules;
+    }
+
+    function buildMatrixPrompt(hasCustomDirection = false) {
+        let maxOptions = parseInt(settings.numOptions);
+        let resolvedRules = getResolvedMatrix(maxOptions, hasCustomDirection);
+        
+        if (resolvedRules.length === 0) {
+            return `Generate exactly ${maxOptions} distinct action/dialogue choices for {{user}}.\n`;
+        }
+        
+        let matrixStr = `Generate exactly ${maxOptions} distinct action/dialogue choices for {{user}} following this precise matrix:\n`;
+        resolvedRules.forEach(rule => {
+            let targetsStr = rule.targets.length === 1 ? rule.targets[0].toString() : rule.targets.join(', ');
+            matrixStr += `- Option${rule.targets.length > 1 ? 's' : ''} ${targetsStr}: ${rule.text}\n`;
+        });
+        return matrixStr.trim();
+    }
+
+    function extractStorySummary() {
+        if (!settings.includeSummary) return "";
+        const chat = context.chat;
+        if (!chat || chat.length === 0) return "";
+
+        for (let i = chat.length - 1; i >= 0; i--) {
+            if (chat[i].is_system && chat[i].mes && (chat[i].mes.includes("Summary:") || chat[i].mes.includes("<memory>"))) {
+                return `### STORY SUMMARY ###\n${chat[i].mes.trim()}`;
+            }
+        }
+        if (context.extensionSettings?.memory?.summary) {
+            return `### STORY SUMMARY ###\n${context.extensionSettings.memory.summary}`;
+        }
+        return "";
+    }
+
+    function buildUserStyleProfile() {
+        if (!settings.useUserStyle) return "";
+        const chat = context.chat;
+        if (!chat || chat.length === 0) return "";
+        
+        const userMsgs = chat.slice(-15)
+            .filter(msg => msg.is_user && !msg.is_system && !msg.mes.startsWith('/'))
+            .map(msg => msg.mes.trim());
+            
+        if (userMsgs.length === 0) return "";
+        const styleString = userMsgs.slice(-3).join('\n---\n');
+        return settings.userStyleTemplate.replaceAll("{{user_messages}}", styleString);
+    }
+
+    async function triggerGeneration(isTest = false, customDirection = "") {
+        if (isGenerating) {
+            log("Generation already in progress. Ignoring duplicate request.", 1);
+            return;
+        }
+
+        const goBtnIcon = document.querySelector('#cs_widget_go i');
+        if (goBtnIcon) goBtnIcon.className = "fa-solid fa-hourglass-half fa-spin";
+        
         if (isTest) {
-            log("Rendering Test UI...");
-            renderChoices(["Test Option 1", "Test Option 2", "Test Option 3"]);
+            renderChoices([
+                "Approach carefully and ask a question to determine her mood layout flow.", 
+                "Suggest looking for the others to ease the current room tension variables.", 
+                "Wait silently to see what happens next in the local scene frame context list arrays history.", 
+                "Double down with an intense gaze, tracking her response lines metrics without any keywords.", 
+                "The story proceedings shift track direction toward an unexpected timeline frame reset structure."
+            ]);
+            if (goBtnIcon) goBtnIcon.className = "fa-solid fa-play";
             return;
         }
 
         const chat = context.chat;
         if (!chat?.length || chat[chat.length - 1].is_user) {
-            log("No AI message to base choices on.");
+            log("Cannot generate choices: Last message in chat is from the user.", 2);
+            if (goBtnIcon) goBtnIcon.className = "fa-solid fa-play";
             return;
         }
 
+        isGenerating = true;
+        const storySummary = extractStorySummary();
+        const userStyle = buildUserStyleProfile();
+        
+        const hasCustomDirection = (customDirection.trim() !== "");
+        const dynamicMatrix = buildMatrixPrompt(hasCustomDirection);
+        
         try {
-            const lastText = chat[chat.length - 1].mes;
-            log("Calling AI for choices...");
-            const choices = await fetchChoices(lastText);
-            if (choices) renderChoices(choices);
-        } catch (e) { log("Fetch failed: " + e.message); }
+            log(`Fetching ${settings.numOptions} choices from Native backend...`, 1);
+            const choices = await executeWithRetry(() => fetchChoices(storySummary, userStyle, dynamicMatrix, customDirection), 1, 3000);
+            if (choices && choices.length > 0) renderChoices(choices);
+            else log("Failed to parse valid choices from LLM.", 1);
+        } catch (e) { 
+            log("Fetch failed completely: " + e.message, 1); 
+        } finally {
+            isGenerating = false;
+            if (goBtnIcon) goBtnIcon.className = "fa-solid fa-play";
+        }
     }
 
-    async function fetchChoices(storyText) {
-        const prompt = settings.systemPrompt.replace("{{numOptions}}", settings.numOptions);
-        const response = await fetch("/api/chat/completions", {
-            method: "POST",
-            headers: { 
-                "Content-Type": "application/json",
-                ...(context.getNetworkHeaders ? context.getNetworkHeaders() : {})
-            },
-            body: JSON.stringify({
-                messages: [{ role: "system", content: prompt }, { role: "user", content: storyText }],
-                temperature: 0.7
-            })
+    async function executeWithRetry(fn, maxRetries, delayMs) {
+        for (let i = 0; i < maxRetries; i++) {
+            try { return await fn(); } 
+            catch (err) {
+                log(`API Error (Attempt ${i + 1}/${maxRetries}): ${err.message}`, 1);
+                if (i === maxRetries - 1) throw err;
+                await new Promise(r => setTimeout(r, delayMs)); 
+            }
+        }
+    }
+
+    function parseLLMArray(rawText) {
+        let cleanText = rawText.trim();
+        
+        function sanitizeOption(text) {
+            let s = text.trim().replace(REGEX_DEBRIS, '');
+            if (s.startsWith('""') && s.endsWith('""') && s.length > 4) s = s.substring(1, s.length - 1);
+            if (s.startsWith('"*') && s.endsWith('* "')) s = s.substring(1, s.length - 1);
+            s = s.replace(REGEX_LIST_MARKERS, '');
+            if (((s.match(/"/g) || []).length) % 2 !== 0) s += '"';
+            if (((s.match(/\*/g) || []).length) % 2 !== 0) s += '*';
+            return s.trim();
+        }
+
+        const mdRegex = new RegExp(`(${MD_JSON_START}|${MD_END}|^\`\`\`|^\`\`\`json)`, 'gim');
+        cleanText = cleanText.replace(mdRegex, '').trim();
+
+        let choices = [];
+        let match;
+        REGEX_AGGRESSIVE_JSON.lastIndex = 0;
+        while ((match = REGEX_AGGRESSIVE_JSON.exec(cleanText)) !== null) {
+            let cleanOpt = sanitizeOption(match[1].replace(/\\"/g, '"'));
+            if (cleanOpt.length > 0) choices.push(cleanOpt);
+        }
+        
+        if (choices.length > 0) return choices;
+
+        for (let line of cleanText.split('\n')) {
+            let trimmed = line.trim();
+            if (REGEX_FALLBACK_LIST.test(trimmed)) {
+                let cleanOpt = sanitizeOption(trimmed.replace(REGEX_FALLBACK_LIST, ''));
+                if (cleanOpt.length > 0) choices.push(cleanOpt);
+            }
+        }
+        
+        if (choices.length > 0) return choices;
+        return null;
+    }
+
+    async function fetchChoices(storySummary, userStyleText, dynamicMatrix, customDirection) {
+        let safeUserName = context.name2 || "The Player";
+        if (safeUserName === "SillyTavern System" || safeUserName === "System") safeUserName = "The Player";
+
+        let stInstruction = settings.instructionPrompt
+            .replaceAll("{{numOptions}}", settings.numOptions)
+            .replaceAll("{{style_block}}", userStyleText)
+            .replaceAll("{{matrix_block}}", dynamicMatrix)
+            .replaceAll("{{user}}", safeUserName);
+
+        if (customDirection && customDirection.trim() !== "") {
+            const dirPrompt = `\n[SPECIFIC USER DIRECTION FOR THESE CHOICES]: "${customDirection.trim()}"\nEnsure the generated options strongly reflect this direction.\n`;
+            if (stInstruction.includes("CRITICAL RULE:")) {
+                stInstruction = stInstruction.replace("CRITICAL RULE:", `${dirPrompt}\nCRITICAL RULE:`);
+            } else {
+                stInstruction += `\n${dirPrompt}`;
+            }
+        }
+
+        const compiledPrompt = storySummary ? `${storySummary}\n\n${stInstruction}` : stInstruction;
+
+        log(`SENDING QUIET PROMPT:\n${compiledPrompt}`, 2);
+        
+        let rawResponse = await generateQuietPrompt({
+            quietPrompt: compiledPrompt, 
+            skipWIAN: false, 
+            removeReasoning: true 
         });
-        const data = await response.json();
-        const match = data.choices[0].message.content.match(/\[.*\]/s);
-        return match ? JSON.parse(match[0]) : null;
+        
+        if (!rawResponse || rawResponse.trim() === "") throw new Error("Empty response from ST Proxy");
+        
+        log(`RAW LLM RESPONSE:\n${rawResponse}`, 2);
+        return parseLLMArray(rawResponse);
     }
 
     function renderChoices(choices) {
-        clearUI();
-        const parent = document.getElementById("form_main") || document.body;
-        choiceContainer = document.createElement("div");
-        choiceContainer.className = "choice-stream-container";
-        
-        // Apply position
-        choiceContainer.style.left = `${settings.offset_left}px`;
-        choiceContainer.style.right = `${settings.offset_right}px`;
-        if (settings.position === "bottom") {
-            choiceContainer.style.bottom = `${settings.offset_bottom}px`;
-        } else {
-            choiceContainer.style.top = `${settings.offset_top}px`;
-        }
+        try {
+            clearUI();
+            
+            choiceContainer = document.createElement("div");
+            choiceContainer.className = "choice-stream-container";
+            choiceContainer.id = "active_choice_stream_ui"; 
 
-        const controls = document.createElement("div");
-        controls.className = "choice-stream-controls";
-        const closeBtn = document.createElement("button");
-        closeBtn.className = "choice-stream-util-btn";
-        closeBtn.innerText = "✕";
-        closeBtn.onclick = clearUI;
-        controls.append(closeBtn);
-        choiceContainer.append(controls);
+            const fragment = document.createDocumentFragment();
 
-        const box = document.createElement("div");
-        box.className = `choice-stream-box choice-stream-layout-${settings.layout}`;
+            const controls = document.createElement("div");
+            controls.className = "choice-stream-controls";
+            
+            const minBtn = document.createElement("button");
+            minBtn.className = "choice-stream-util-btn interactable";
+            minBtn.innerHTML = "<i class='fa-solid fa-minus'></i>";
+            
+            const closeBtn = document.createElement("button");
+            closeBtn.className = "choice-stream-util-btn interactable";
+            closeBtn.innerHTML = "<i class='fa-solid fa-xmark'></i>";
+            
+            closeBtn.onclick = (e) => { e.stopPropagation(); clearUI(); };
 
-        choices.forEach(text => {
-            const btn = document.createElement("button");
-            btn.className = "choice-stream-btn";
-            btn.innerText = text;
-            btn.onclick = () => {
-                const textarea = document.getElementById("send_textarea");
-                if (isInputManuallyEdited) {
-                    const start = textarea.selectionStart;
-                    textarea.value = textarea.value.slice(0, start) + text + textarea.value.slice(textarea.selectionEnd);
-                } else {
-                    textarea.value = text;
-                }
-                lastInsertedText = textarea.value;
-                textarea.dispatchEvent(new Event("input", { bubbles: true }));
-                textarea.focus();
+            minBtn.onclick = (e) => { 
+                e.stopPropagation(); 
+                choiceContainer.classList.toggle("choice-stream-minimized"); 
+                minBtn.innerHTML = choiceContainer.classList.contains("choice-stream-minimized") 
+                    ? "<i class='fa-solid fa-plus'></i>" 
+                    : "<i class='fa-solid fa-minus'></i>";
+                updateContainerPosition(); 
             };
-            box.append(btn);
-        });
+            
+            controls.append(minBtn, closeBtn);
+            fragment.appendChild(controls);
 
-        choiceContainer.append(box);
-        parent.append(choiceContainer);
-        log("UI Rendered on screen.");
+            const box = document.createElement("div");
+            box.className = "choice-stream-box";
+
+            choices.slice(0, settings.numOptions).forEach((text, index) => {
+                const card = document.createElement("div");
+                card.className = "choice-stream-card is-collapsed"; 
+                card.id = `choice_card_${index}`;
+
+                const toggleBtn = document.createElement("div");
+                toggleBtn.className = "choice-card-toggle interactable";
+                toggleBtn.innerHTML = "<i class='fa-solid fa-chevron-right choice-card-toggle-icon'></i>";
+                
+                toggleBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    card.classList.toggle("is-collapsed");
+                };
+
+                const btn = document.createElement("button");
+                btn.className = "choice-stream-btn interactable";
+                btn.innerText = text;
+                btn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!DOM_textarea) DOM_textarea = document.getElementById("send_textarea");
+                    if (isInputManuallyEdited) {
+                        const start = DOM_textarea.selectionStart;
+                        DOM_textarea.value = DOM_textarea.value.slice(0, start) + text + DOM_textarea.value.slice(DOM_textarea.selectionEnd);
+                    } else DOM_textarea.value = text;
+                    
+                    lastInsertedText = DOM_textarea.value;
+                    DOM_textarea.dispatchEvent(new Event("input", { bubbles: true }));
+                    DOM_textarea.focus();
+                };
+
+                const cardCloseBtn = document.createElement("div");
+                cardCloseBtn.className = "choice-card-close interactable";
+                cardCloseBtn.innerHTML = "<i class='fa-solid fa-xmark'></i>";
+                cardCloseBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    card.remove(); 
+                };
+
+                card.append(toggleBtn, btn, cardCloseBtn);
+                box.append(card);
+            });
+            
+            fragment.appendChild(box);
+            choiceContainer.appendChild(fragment);
+            
+            updateContainerPosition(); 
+            
+        } catch (e) {
+            log("Error rendering UI: " + e.message, 1);
+        }
     }
 
     function clearUI() {
         if (choiceContainer) { choiceContainer.remove(); choiceContainer = null; }
+        const ghost = document.getElementById("active_choice_stream_ui");
+        if (ghost) ghost.remove();
+    }
+    
+    function updateMatrixUI() {
+        const container = document.getElementById("cs_matrix_list");
+        if (!container) return;
+        container.innerHTML = '';
+        
+        let maxOpt = parseInt(settings.numOptions);
+        let hasExceed = settings.matrix.some(r => {
+            let targets = parseRangeString(r.range, 999); 
+            return targets.some(n => n > maxOpt);
+        });
+        
+        const warningDiv = document.getElementById("cs_matrix_warning");
+        if (warningDiv) warningDiv.style.display = hasExceed ? 'block' : 'none';
+        
+        settings.matrix.forEach((rule, index) => {
+            const row = document.createElement('div');
+            row.className = "flex-container alignitemscenter flexGap5 marginBot5";
+            row.innerHTML = `
+                <label>Target Options:</label>
+                <input type="text" class="text_pole matrix-range" style="width:70px; text-align:center;" value="${rule.range}" placeholder="1-3" data-idx="${index}">
+                <input type="text" class="text_pole matrix-text" style="flex:1" value="${rule.text.replace(/"/g, '&quot;')}" placeholder="Style rule..." data-idx="${index}">
+                <div class="menu_button interactable matrix-del margin0" style="padding:4px 8px;" data-idx="${index}"><i class="fa-solid fa-trash"></i></div>
+            `;
+            container.appendChild(row);
+        });
+        
+        $('.matrix-range').on('input', function() { settings.matrix[$(this).data('idx')].range = this.value; updateMatrixUI(); save(); });
+        $('.matrix-text').on('input', function() { settings.matrix[$(this).data('idx')].text = this.value; save(); });
+        $('.matrix-del').on('click', function() { 
+            settings.matrix.splice($(this).data('idx'), 1); 
+            updateMatrixUI(); 
+            save(); 
+        });
     }
 
     function renderSettingsMenu() {
-        if (document.getElementById("cs_active")) return true; // Already rendered
+        if (document.getElementById("cs_active")) return true; 
         const target = document.getElementById("extensions_settings") || document.getElementById("extensions_settings2");
         if (!target) return false;
 
         const html = `
-            <div class="inline-drawer"><div class="inline-drawer-header"><b>Choice Stream</b></div>
-            <div class="inline-drawer-content">
-                <label><input type="checkbox" id="cs_active" ${settings.enabled ? "checked" : ""}> Auto-generate</label><br>
-                Options: <input type="number" id="cs_num" value="${settings.numOptions}" style="width:40px">
-                Layout: <select id="cs_lay"><option value="row" ${settings.layout=='row'?'selected':''}>Row</option><option value="column" ${settings.layout=='column'?'selected':''}>Col</option></select><br>
-                Dock: <select id="cs_pos"><option value="top" ${settings.position=='top'?'selected':''}>Top</option><option value="bottom" ${settings.position=='bottom'?'selected':''}>Bottom</option></select><br>
-                L/R: <input type="number" id="cs_l" value="${settings.offset_left}" style="width:40px"> <input type="number" id="cs_r" value="${settings.offset_right}" style="width:40px"><br>
-                T/B: <input type="number" id="cs_t" value="${settings.offset_top}" style="width:40px"> <input type="number" id="cs_b" value="${settings.offset_bottom}" style="width:40px"><br>
-                <button id="cs_test" class="menu_button">Test UI Rendering</button>
-                <button id="cs_manual" class="menu_button">Force AI Gen</button><br>
-                <textarea id="cs_prompt" style="width:100%; height:50px; font-size:10px;">${settings.systemPrompt}</textarea>
-            </div></div>`;
+            <div id="cs--settings" class="extension_container">
+                <div class="cs-drawer">
+                    <div class="inline-drawer-toggle inline-drawer-header cs-drawer-toggle interactable" tabindex="0" role="button">
+                        <b>Narrative Choice Stream</b>
+                        <div class="inline-drawer-icon fa-solid interactable down fa-circle-chevron-down" tabindex="0" role="button"></div>
+                    </div>
+                    <div class="cs-drawer-content" style="display: none; padding-top: 10px;">
+                        <label class="checkbox_label flex-container marginBot5">
+                            <input type="checkbox" id="cs_active" ${settings.enabled ? "checked" : ""}>
+                            <span>Auto-generate Choices</span>
+                        </label>
+                        <label class="checkbox_label flex-container marginBot5">
+                            <input type="checkbox" id="cs_skip_interrupt" ${settings.skipInterrupted ? "checked" : ""}>
+                            <span>Skip on Interrupted Generation</span>
+                        </label>
+                        
+                        <hr>
+                        <h4>Context Integration</h4>
+                        <label class="checkbox_label flex-container marginBot5" title="Inject ST's running summary into the choice generator.">
+                            <input type="checkbox" id="cs_include_summary" ${settings.includeSummary ? "checked" : ""}>
+                            <span>Include Lore Summaries</span>
+                        </label>
+                        <label class="checkbox_label flex-container marginBot5" title="Extract past messages to teach the LLM your writing style.">
+                            <input type="checkbox" id="cs_use_user_style" ${settings.useUserStyle ? "checked" : ""}>
+                            <span>Enable User Style Profiler</span>
+                        </label>
+                        <label class="checkbox_label flex-container marginBot5" title="Automatically structure options using the matrix below.">
+                            <input type="checkbox" id="cs_dynamic_matrix" ${settings.dynamicMatrix ? "checked" : ""}>
+                            <span>Use Dynamic Tone Matrix</span>
+                        </label>
+
+                        <div class="flex-container alignitemscenter marginBot5 justifySpaceBetween marginTop5" style="border-bottom: 1px solid var(--SmartThemeBorderColor); padding-bottom: 5px;">
+                            <h4 class="margin0">Prompts & Matrix</h4>
+                            <div id="cs_reset_prompts" class="menu_button interactable margin0" tabindex="0" role="button" title="Restore Default Prompts">
+                                <i class="fa-solid fa-rotate-left"></i> Restore Default Prompts
+                            </div>
+                        </div>
+                        
+                        <div class="flex-container alignitemscenter marginBot5" title="Delay API calls by X seconds to prevent crashes.">
+                            <label style="flex:1;">API Delay: <span id="cs_delay_val">${settings.generationDelay}</span>s</label>
+                            <input type="range" id="cs_delay" style="flex:1;" value="${settings.generationDelay}" min="0" max="15" step="1">
+                        </div>
+                        
+                        <div class="flex-container alignitemscenter marginBot5">
+                            <label style="flex:1;"><strong>Number of Options:</strong> <span id="cs_num_val">${settings.numOptions}</span></label>
+                            <input type="range" id="cs_num" style="flex:1;" value="${settings.numOptions}" min="1" max="10">
+                        </div>
+                        
+                        <div class="flex-container flexFlowColumn marginBot5" style="border-left: 2px solid var(--SmartThemeBorderColor); padding-left: 10px;">
+                            <div class="flex-container alignitemscenter justifySpaceBetween">
+                                <label><strong>Option Tone Matrix</strong> <small>(Applied to {{matrix_block}})</small></label>
+                                <div id="cs_add_matrix" class="menu_button interactable margin0" tabindex="0" role="button" style="padding: 2px 8px; font-size: 0.85rem;">
+                                    <i class="fa-solid fa-plus"></i> Add Rule
+                                </div>
+                            </div>
+                            <div id="cs_matrix_warning" style="color: #ef4444; font-size: 0.85rem; margin-top: 4px; display: none;"><i class="fa-solid fa-triangle-exclamation"></i> Warning: Some matrix targets exceed the Number of Options.</div>
+                            <div id="cs_matrix_list" class="flex-container flexFlowColumn marginTop5"></div>
+                        </div>
+
+                        <div class="flex-container flexFlowColumn marginBot5">
+                            <label for="cs_user_style_template"><strong>User Style Block Template</strong></label>
+                            <textarea id="cs_user_style_template" class="text_pole textarea_compact autoSetHeight" rows="3">${settings.userStyleTemplate}</textarea>
+                        </div>
+                        
+                        <div class="flex-container flexFlowColumn marginBot5">
+                            <label for="cs_instruction_prompt"><strong>Master Instruction Prompt</strong> <small>(Supports {{style_block}} and {{matrix_block}})</small></label>
+                            <textarea id="cs_instruction_prompt" class="text_pole textarea_compact autoSetHeight" rows="8">${settings.instructionPrompt}</textarea>
+                        </div>
+                        
+                        <hr>
+                        <h4>UI Configuration</h4>
+                        
+                        <div class="flex-container flexFlowColumn marginBot5">
+                            <label for="cs_dbg">Debug Level (F12 Console)</label>
+                            <select id="cs_dbg" class="text_pole">
+                                <option value="0" ${settings.debugMode==0?'selected':''}>0 - Off</option>
+                                <option value="1" ${settings.debugMode==1?'selected':''}>1 - Normal</option>
+                                <option value="2" ${settings.debugMode==2?'selected':''}>2 - Verbose (Show Prompts)</option>
+                            </select>
+                        </div>
+                        
+                        <div class="flex-container alignitemscenter marginBot5">
+                            <label style="flex:1;">Dock Position</label>
+                            <select id="cs_pos" class="text_pole" style="flex:1;">
+                                <option value="top" ${settings.position=='top'?'selected':''}>Top (Below Top Bar)</option>
+                                <option value="bottom" ${settings.position=='bottom'?'selected':''}>Bottom (Above Input Bar)</option>
+                            </select>
+                        </div>
+                        
+                        <div class="flex-container alignitemscenter marginBot5">
+                            <label style="flex:1;">Vertical Offset (Top): <span id="cs_y_top_val">${settings.offset_top}</span>px</label>
+                            <input type="range" id="cs_y_top" style="flex:1;" value="${settings.offset_top}" min="0" max="500">
+                        </div>
+                        <div class="flex-container alignitemscenter marginBot5">
+                            <label style="flex:1;">Vertical Offset (Bottom): <span id="cs_y_bot_val">${settings.offset_bottom}</span>px</label>
+                            <input type="range" id="cs_y_bot" style="flex:1;" value="${settings.offset_bottom}" min="0" max="500">
+                        </div>
+                        
+                        <hr style="border-color: rgba(255,255,255,0.1); margin: 8px 0;">
+                        <div class="flex-container marginBot5" style="gap: 5px;">
+                            <div id="cs_test" class="menu_button interactable flex1 margin0" tabindex="0" role="button">
+                                <i class="fa-solid fa-eye"></i> Test UI
+                            </div>
+                            <div id="cs_manual" class="menu_button interactable flex1 margin0" tabindex="0" role="button">
+                                <i class="fa-solid fa-wand-magic-sparkles"></i> Force Gen
+                            </div>
+                            <div id="cs_reset_widget" class="menu_button interactable flex1 margin0" tabindex="0" role="button" title="Snap Floating Widget back to Default">
+                                <i class="fa-solid fa-arrows-to-dot"></i> Reset Widget Pos
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
         
         target.insertAdjacentHTML('beforeend', html);
+
+        $("#cs--settings .cs-drawer-toggle").on("click", function(e) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            const content = $(this).siblings('.cs-drawer-content');
+            const icon = $(this).find('.inline-drawer-icon');
+            content.slideToggle(200);
+            icon.toggleClass('fa-circle-chevron-down fa-circle-chevron-up');
+        });
+
+        $("#cs_active").on("change", function() { settings.enabled = this.checked; save(); });
+        $("#cs_skip_interrupt").on("change", function() { settings.skipInterrupted = this.checked; save(); });
+        $("#cs_include_summary").on("change", function() { settings.includeSummary = this.checked; save(); });
+        $("#cs_use_user_style").on("change", function() { settings.useUserStyle = this.checked; updateMatrixUI(); save(); });
+        $("#cs_dynamic_matrix").on("change", function() { settings.dynamicMatrix = this.checked; updateMatrixUI(); save(); });
         
-        document.getElementById("cs_active").onchange = (e) => { settings.enabled = e.target.checked; save(); };
-        document.getElementById("cs_num").onchange = (e) => { settings.numOptions = e.target.value; save(); };
-        document.getElementById("cs_lay").onchange = (e) => { settings.layout = e.target.value; save(); };
-        document.getElementById("cs_pos").onchange = (e) => { settings.position = e.target.value; save(); };
-        document.getElementById("cs_l").onchange = (e) => { settings.offset_left = e.target.value; save(); };
-        document.getElementById("cs_r").onchange = (e) => { settings.offset_right = e.target.value; save(); };
-        document.getElementById("cs_t").onchange = (e) => { settings.offset_top = e.target.value; save(); };
-        document.getElementById("cs_b").onchange = (e) => { settings.offset_bottom = e.target.value; save(); };
-        document.getElementById("cs_test").onclick = () => triggerGeneration(true);
-        document.getElementById("cs_manual").onclick = () => triggerGeneration(false);
+        $(`#cs_instruction_prompt`).on("input", function() { settings.instructionPrompt = this.value; save(); });
+        $(`#cs_user_style_template`).on("input", function() { settings.userStyleTemplate = this.value; save(); });
+        
+        ["cs_num", "cs_delay"].forEach(id => {
+            $(`#${id}`).on("input", function() { 
+                const key = { "cs_num": "numOptions", "cs_delay": "generationDelay" }[id];
+                settings[key] = this.value; 
+                if (id === "cs_num") updateMatrixUI();
+                $(`#${id}_val`).text(this.value); save(); 
+            });
+        });
+        
+        $("#cs_y_top").on("input", function() { settings.offset_top = this.value; $("#cs_y_top_val").text(this.value); updateContainerPosition(); save(); });
+        $("#cs_y_bot").on("input", function() { settings.offset_bottom = this.value; $("#cs_y_bot_val").text(this.value); updateContainerPosition(); save(); });
+
+        $("#cs_dbg").on("change", function() { settings.debugMode = parseInt(this.value); EXT_LOG_LEVEL = settings.debugMode; save(); });
+        $("#cs_pos").on("change", function() { settings.position = this.value; updateContainerPosition(); save(); });
+
+        $("#cs_test").on("click", (e) => { e.stopPropagation(); triggerGeneration(true); });
+        $("#cs_manual").on("click", (e) => { e.stopPropagation(); clearUI(); triggerGeneration(false); });
+        
+        $("#cs_reset_widget").on("click", (e) => {
+            e.stopPropagation();
+            settings.widget_left = '40%';
+            settings.widget_bottom = '';
+            settings.widget_top = '40%';
+            const widget = document.getElementById('cs_floating_widget');
+            if (widget) {
+                widget.style.left = '40%';
+                widget.style.top = '40%';
+                widget.style.bottom = 'auto';
+            }
+            save();
+            log("Widget position reset.", 1);
+        });
+
+        updateMatrixUI();
+        $("#cs_add_matrix").on("click", (e) => {
+            e.stopPropagation();
+            settings.matrix.push({ range: "1", text: "New matrix rule" });
+            updateMatrixUI();
+            save();
+        });
+
+        $("#cs_reset_prompts").on("click", (e) => {
+            e.stopPropagation();
+            if(confirm("Restore default JSON prompts?")) {
+                settings.instructionPrompt = defaultPrompts.instructionPrompt;
+                settings.userStyleTemplate = defaultPrompts.userStyleTemplate;
+                settings.matrix = JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix));
+                $("#cs_instruction_prompt").val(settings.instructionPrompt);
+                $("#cs_user_style_template").val(settings.userStyleTemplate);
+                updateMatrixUI();
+                save();
+            }
+        });
+        
         return true;
     }
 
     function save() {
         context.extensionSettings[MODULE_NAME] = settings;
-        context.saveSettingsDebounced();
+        if (context.saveSettingsDebounced) context.saveSettingsDebounced();
+        updateContainerPosition();
     }
 
-    // Modern SillyTavern Event Loader
     jQuery(() => { init(); });
 })();
