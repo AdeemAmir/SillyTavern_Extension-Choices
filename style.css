@@ -139,7 +139,7 @@
 /* --- THE EXPAND/COLLAPSE ENGINE FIX --- */
 .choice-stream-card.is-collapsed .choice-stream-btn {
     display: -webkit-box !important;
-    -webkit-line-clamp: 3 !important; 
+    /*-webkit-line-clamp: 3 !important;*/
     -webkit-box-orient: vertical !important;
     overflow: hidden !important;
     white-space: normal !important; 
