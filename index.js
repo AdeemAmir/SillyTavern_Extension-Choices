@@ -46,14 +46,12 @@ import {
         offset_top: 10,
         offset_bottom: 50,
         
-        // Data Logging Toggles
         store_ai_context: true,
         store_summary: true,
         store_user_style: true,
         store_full_prompt: true,
         store_raw_response: true,
         
-        // Resizing Toggles
         widget_width: 90, 
         choice_block_max_height: 40,
         modal_width: 95,
@@ -81,9 +79,11 @@ import {
         if (context.extensionSettings[MODULE_NAME]) {
             settings = Object.assign(settings, context.extensionSettings[MODULE_NAME]);
             
-            // Legacy Cleanup
-            if (settings.choiceHistory || settings.failedParses || settings.foreverLogText) {
+            // Clean settings.json of bloat if it exists
+            if (settings.history || settings.choiceHistory || settings.fails || settings.failedParses || settings.foreverLogText) {
+                delete settings.history;
                 delete settings.choiceHistory;
+                delete settings.fails;
                 delete settings.failedParses;
                 delete settings.foreverLogText;
                 save();
@@ -94,7 +94,6 @@ import {
         if (!settings.userStyleTemplate) settings.userStyleTemplate = defaultPrompts.userStyleTemplate;
         if (!settings.matrix) settings.matrix = JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix));
         
-        // Setup Defaults for new properties
         if (settings.widget_width === undefined) settings.widget_width = 90;
         if (settings.choice_block_max_height === undefined) settings.choice_block_max_height = 40;
         if (settings.modal_width === undefined) settings.modal_width = 95;
@@ -235,11 +234,19 @@ import {
 
     // --- IDENTIFICATION LOGIC ---
     function getCurrentChatId() {
-        return context.chatId || "Unknown_Chat_File";
+        return context.chatId || "Unknown_Chat_ID";
     }
 
     function getCurrentChatName() {
-        return context.name2 || "Unknown Character";
+        if (context.groupId && Array.isArray(context.groups)) {
+            const group = context.groups.find(g => g.id === context.groupId || g.uid === context.groupId);
+            if (group && group.name) return group.name;
+        }
+        if (context.characterId !== undefined && Array.isArray(context.characters)) {
+            const char = context.characters[context.characterId];
+            if (char && char.name) return char.name;
+        }
+        return context.name2 || "Unknown Chat";
     }
 
     function extractAIResponseContext() {
@@ -253,8 +260,7 @@ import {
         return "No AI message found.";
     }
 
-    // --- UNIFIED SERVER.JS API HOOKS WITH NOTIFICATIONS ---
-    
+    // --- OFFICIAL SERVER PLUGIN API HOOKS ---
     function getApiHeaders() {
         let headers = { 'Content-Type': 'application/json' };
         try {
@@ -271,18 +277,18 @@ import {
     async function apiGetDB() {
         try {
             return await $.ajax({
-                url: '/api/extensions/SillyTavern_Extension-Choices/db',
+                url: '/api/plugins/st_choices_backend/db',
                 type: 'GET',
                 headers: getApiHeaders(),
                 dataType: 'json'
             });
         } catch (e) {
             if (e.status === 404) {
-                if(window.toastr) window.toastr.error("Choice Stream backend not found! Make sure server.js is in the extension folder and you restarted the SillyTavern console.", "Extension Setup Error", {timeOut: 8000});
+                if(window.toastr) window.toastr.error("Choice Stream database not found! Ensure st_choices_backend is correctly placed in plugins/ and you restarted ST.", "Backend Error", {timeOut: 8000});
             } else {
                 if(window.toastr) window.toastr.error("DB Fetch Error: " + e.statusText, "Choice Stream");
             }
-            log("API Fetch Error (Is server.js installed?): " + e.responseText, 1);
+            log("API Fetch Error: " + e.responseText, 1);
             return [];
         }
     }
@@ -290,7 +296,7 @@ import {
     async function apiLogEvent(payload) {
         try {
             await $.ajax({
-                url: '/api/extensions/SillyTavern_Extension-Choices/log',
+                url: '/api/plugins/st_choices_backend/log',
                 type: 'POST',
                 headers: getApiHeaders(),
                 contentType: 'application/json',
@@ -298,7 +304,7 @@ import {
             });
         } catch (e) {
             if (e.status === 404) {
-                if(window.toastr) window.toastr.error("Cannot save choices! server.js backend is missing. Restart SillyTavern.", "Extension Setup Error");
+                if(window.toastr) window.toastr.error("Cannot save choices! Backend is missing. Ensure the backend folder is in plugins/.", "Extension Setup Error");
             }
             log("API Log Error: " + e.responseText, 1);
         }
@@ -307,7 +313,7 @@ import {
     async function apiDeleteRecord(global_id) {
         try {
             await $.ajax({
-                url: '/api/extensions/SillyTavern_Extension-Choices/delete',
+                url: '/api/plugins/st_choices_backend/delete',
                 type: 'POST',
                 headers: getApiHeaders(),
                 contentType: 'application/json',
@@ -318,12 +324,14 @@ import {
         }
     }
 
-    async function apiClearDB() {
+    async function apiClearDB(type = "ALL") {
         try {
             await $.ajax({
-                url: '/api/extensions/SillyTavern_Extension-Choices/clear',
+                url: '/api/plugins/st_choices_backend/clear',
+                type: 'POST',
                 headers: getApiHeaders(),
-                type: 'POST'
+                contentType: 'application/json',
+                data: JSON.stringify({ type })
             });
         } catch (e) {
             if(window.toastr) window.toastr.error("Failed to wipe database.", "Choice Stream");
@@ -360,8 +368,7 @@ import {
         });
     }
 
-    // --- MODALS (Choice History & Failed Parses) ---
-
+    // --- MODALS ---
     async function showHistoryModal(filterChat = "__ALL__", searchKeyword = "") {
         if (document.getElementById('cs_history_modal')) document.getElementById('cs_history_modal').remove();
         
@@ -372,7 +379,6 @@ import {
         const currentChatId = getCurrentChatId();
         let allRecords = await apiGetDB();
         
-        // Filter purely for successes to show in the choices list
         let allClusters = allRecords.filter(r => r.status === "SUCCESS");
         allClusters.sort((a,b) => b.timestamp - a.timestamp);
         
@@ -386,21 +392,21 @@ import {
         if (searchKeyword.trim() !== "") {
             const kw = searchKeyword.toLowerCase();
             filtered = filtered.filter(c => 
-                c.chat_name.toLowerCase().includes(kw) || 
-                c.choices.some(choice => choice.toLowerCase().includes(kw)) ||
+                (c.chat_name && c.chat_name.toLowerCase().includes(kw)) || 
+                (c.choices && c.choices.some(choice => choice.toLowerCase().includes(kw))) ||
                 (c.custom_direction && c.custom_direction.toLowerCase().includes(kw)) ||
                 (c.ai_context && c.ai_context.toLowerCase().includes(kw))
             );
         }
 
         let chatOptionsHtml = `<option value="__ALL__" ${filterChat === '__ALL__' ? 'selected' : ''}>All Chats (${allClusters.length} total saves)</option>`;
-        
         const chatKeysArr = Object.keys(chatKeysMap).sort((a,b) => a === currentChatId ? -1 : (b === currentChatId ? 1 : chatKeysMap[a].localeCompare(chatKeysMap[b])));
         
         chatKeysArr.forEach(chatId => {
             const isCurr = chatId === currentChatId ? '★ [Current] ' : '';
             const count = allClusters.filter(c => c.chat_id === chatId).length;
-            chatOptionsHtml += `<option value="${chatId}" ${filterChat === chatId ? 'selected' : ''}>${isCurr}${chatKeysMap[chatId]} (${count})</option>`;
+            const cName = chatKeysMap[chatId] || chatId;
+            chatOptionsHtml += `<option value="${chatId}" ${filterChat === chatId ? 'selected' : ''}>${isCurr}${cName} (${count})</option>`;
         });
 
         let bodyHtml = "";
@@ -479,10 +485,10 @@ import {
         modalOverlay.innerHTML = `
             <div class="cs-modal">
                 <div class="cs-modal-header">
-                    <span style="font-size:1.1rem;"><i class="fa-solid fa-clock-rotate-left"></i> Unified Choice Database</span>
+                    <span style="font-size:1.1rem;"><i class="fa-solid fa-clock-rotate-left"></i> Choice Database</span>
                     <div style="display:flex; gap:8px;">
                         <button id="cs_hist_download_btn" class="menu_button cs-touch-btn margin0" title="Export Dataset to JSON"><i class="fa-solid fa-file-export"></i> Dataset</button>
-                        <button id="cs_hist_clearall_btn" class="menu_button cs-touch-btn margin0" style="color:#ef4444;"><i class="fa-solid fa-trash"></i> Wipe DB</button>
+                        <button id="cs_hist_clearall_btn" class="menu_button cs-touch-btn margin0" style="color:#ef4444;"><i class="fa-solid fa-trash"></i> Wipe</button>
                         <button id="cs_hist_head_close" class="menu_button cs-touch-btn margin0" style="background:rgba(239,68,68,0.2);"><i class="fa-solid fa-xmark"></i> Close</button>
                     </div>
                 </div>
@@ -497,7 +503,7 @@ import {
                 <div class="cs-modal-body">${bodyHtml}</div>
 
                 <div class="cs-modal-footer">
-                    <div style="font-size:0.85rem; color:#94a3b8;">Showing <b>${filtered.length}</b> of <b>${allClusters.length}</b> generated clusters</div>
+                    <div style="font-size:0.85rem; color:#94a3b8;">Showing <b>${filtered.length}</b> of <b>${allClusters.length}</b> clusters</div>
                     <button id="cs_hist_foot_close" class="menu_button cs-touch-btn margin0" style="min-width:100px; font-weight:bold;"><i class="fa-solid fa-check"></i> Close</button>
                 </div>
             </div>
@@ -578,9 +584,11 @@ import {
 
         document.getElementById('cs_hist_download_btn').onclick = downloadDatasetJSON;
         document.getElementById('cs_hist_clearall_btn').onclick = async () => {
-            if (confirm("Permanently clear ALL history across all chats? This deletes your local DB file contents.")) {
-                await apiClearDB();
-                showHistoryModal();
+            if (confirm("WARNING: This will permanently delete ALL successful choice history records.\n\nProceed?")) {
+                if (confirm("SECOND CONFIRMATION:\n\nAre you absolutely sure? This will instantly wipe the data from your database file and CANNOT be undone.")) {
+                    await apiClearDB("SUCCESS");
+                    showHistoryModal();
+                }
             }
         };
     }
@@ -635,6 +643,7 @@ import {
                 <div class="cs-modal-header">
                     <span style="font-size:1.1rem;"><i class="fa-solid fa-triangle-exclamation" style="color:#ef4444;"></i> Unparsed Raw Responses (${fails.length})</span>
                     <div style="display:flex; gap:8px;">
+                        <button id="cs_fail_clearall_btn" class="menu_button cs-touch-btn margin0" style="color:#ef4444;"><i class="fa-solid fa-trash"></i> Clear All</button>
                         <button id="cs_fail_head_close" class="menu_button cs-touch-btn margin0" style="background:rgba(239,68,68,0.2);"><i class="fa-solid fa-xmark"></i> Close</button>
                     </div>
                 </div>
@@ -673,6 +682,15 @@ import {
                 showFailedModal();
             };
         });
+
+        document.getElementById('cs_fail_clearall_btn').onclick = async () => {
+            if (confirm("WARNING: This will permanently delete ALL failed parse records.\n\nProceed?")) {
+                if (confirm("SECOND CONFIRMATION:\n\nAre you sure you want to wipe the fails database? This CANNOT be undone.")) {
+                    await apiClearDB("FAIL");
+                    showFailedModal();
+                }
+            }
+        };
     }
 
     function buildFloatingWidget() {
@@ -907,6 +925,7 @@ import {
     async function triggerGeneration(isTest = false, customDirection = "") {
         if (isGenerating) {
             log("Generation already in progress. Ignoring duplicate request.", 1);
+            if (window.toastr) window.toastr.info("Choices generation already in progress...", "Please Wait");
             return;
         }
 
@@ -925,6 +944,7 @@ import {
         const chat = context.chat;
         if (!chat?.length || chat[chat.length - 1].is_user) {
             log("Cannot generate choices: Last message in chat is from the user.", 2);
+            if (window.toastr) window.toastr.warning("You must wait for the character to reply before generating choices.", "Generation Blocked");
             if (goBtnIcon) goBtnIcon.className = "fa-solid fa-play";
             return;
         }
@@ -973,26 +993,29 @@ import {
             }
         } catch (e) { 
             log("Fetch/Parse failed: " + e.message, 1); 
+            if (window.toastr) window.toastr.error("Failed to generate options: " + e.message, "Choices Error");
         } finally {
             isGenerating = false;
             if (goBtnIcon) goBtnIcon.className = "fa-solid fa-play";
             
-            const payload = {
-                datetime: new Date().toLocaleString(),
-                timestamp: Date.now(),
-                chat_id: getCurrentChatId(),
-                chat_name: getCurrentChatName(),
-                status: isSuccess ? "SUCCESS" : "FAIL",
-                ai_context: settings.store_ai_context ? extractAIResponseContext() : "",
-                story_summary: settings.store_summary ? storySummary : "",
-                user_style: settings.store_user_style ? userStyle : "",
-                custom_direction: customDirection.trim(),
-                full_prompt: settings.store_full_prompt ? compiledPrompt : "",
-                raw_response: settings.store_raw_response ? rawResponse : "",
-                choices: isSuccess ? choices : []
-            };
+            if (rawResponse) {
+                const payload = {
+                    datetime: new Date().toLocaleString(),
+                    timestamp: Date.now(),
+                    chat_id: getCurrentChatId(),
+                    chat_name: getCurrentChatName(),
+                    status: isSuccess ? "SUCCESS" : "FAIL",
+                    ai_context: settings.store_ai_context ? extractAIResponseContext() : "",
+                    story_summary: settings.store_summary ? storySummary : "",
+                    user_style: settings.store_user_style ? userStyle : "",
+                    custom_direction: customDirection.trim(),
+                    full_prompt: settings.store_full_prompt ? compiledPrompt : "",
+                    raw_response: settings.store_raw_response ? rawResponse : "",
+                    choices: isSuccess ? choices : []
+                };
 
-            if (rawResponse) apiLogEvent(payload);
+                apiLogEvent(payload);
+            }
         }
     }
 

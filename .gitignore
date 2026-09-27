@@ -9,6 +9,7 @@ lerna-debug.log*
 settings.json
 choices_database.jsonl
 choices_db.jsonl
+choices_db.tmp
 TODO.txt
 
 _bkup
