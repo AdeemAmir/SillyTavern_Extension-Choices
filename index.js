@@ -47,6 +47,7 @@ import {
         widget_left: '40%',
         widget_top: '40%',
         widget_bottom: '',
+        widget_width: 90, 
         userStyleTemplate: defaultPrompts.userStyleTemplate,
         instructionPrompt: defaultPrompts.instructionPrompt,
         matrix: JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix)),
@@ -76,10 +77,12 @@ import {
             if (!settings.matrix) settings.matrix = JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix));
             if (!settings.widget_left) settings.widget_left = '40%';
             if (!settings.widget_top && !settings.widget_bottom) settings.widget_top = '40%';
+            if (settings.widget_width === undefined) settings.widget_width = 90;
             if (!settings.choiceHistory) settings.choiceHistory = {};
             if (!settings.failedParses) settings.failedParses = [];
             if (!settings.foreverLogText) settings.foreverLogText = "";
         }
+        document.documentElement.style.setProperty('--cs-panel-width', `${settings.widget_width}vw`);
     }
 
     function injectCSS() {
@@ -96,6 +99,9 @@ import {
             .cs-history-cluster { padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.05); cursor: pointer; display: flex; flex-direction: column; gap: 8px; transition: background 0.2s; }
             .cs-history-cluster:hover { background: rgba(255,255,255,0.05); }
             .cs-failed-item { background: rgba(239, 68, 68, 0.05); border-left: 4px solid #ef4444; padding: 12px; margin-bottom: 12px; border-radius: 0 4px 4px 0; font-family: monospace; white-space: pre-wrap; word-break: break-word; font-size: 0.9em; max-height: 300px; overflow-y: auto;}
+            
+            #cs_widget_panel { display: none; flex-wrap: nowrap; gap: 4px; width: var(--cs-panel-width, 90vw); max-width: 600px; }
+            #cs_widget_panel.is-open { display: flex; }
             .cs-widget-extra-btn { flex: none !important; width: 35px !important; }
         `;
         document.head.appendChild(style);
@@ -206,7 +212,6 @@ import {
         
         settings.choiceHistory[chatName].unshift({ timestamp, aiResponse, choices });
         
-        // Append to Forever Log securely (avoiding .\ root pollution)
         if (!settings.foreverLogText) settings.foreverLogText = "";
         let logEntry = `\n=================================\n`;
         logEntry += `DATE: ${new Date(timestamp).toLocaleString()}\n`;
@@ -455,10 +460,10 @@ import {
         if (settings.widget_bottom) widget.style.bottom = settings.widget_bottom;
 
         widget.innerHTML = `
-            <div id="cs_widget_btn" title="Drag to move. Click to generate.">
+            <div id="cs_widget_btn" title="Drag to move. Click to toggle.">
                 <i class="fa-solid fa-code-branch"></i>
             </div>
-            <div id="cs_widget_panel" style="display:flex; flex-wrap:nowrap; gap:4px; max-width: 90vw;">
+            <div id="cs_widget_panel">
                 <input type="text" id="cs_widget_input" placeholder="Custom direction..." autocomplete="off">
                 <button class="cs_widget_action cs-widget-extra-btn" id="cs_widget_history" title="Choice History"><i class="fa-solid fa-clock-rotate-left"></i></button>
                 <button class="cs_widget_action cs-widget-extra-btn" id="cs_widget_fails" title="Failed Parses"><i class="fa-solid fa-triangle-exclamation"></i></button>
@@ -485,7 +490,7 @@ import {
             document.addEventListener('mousemove', onDragMove);
             document.addEventListener('touchmove', onDragMove, { passive: false });
             document.addEventListener('mouseup', onDragEnd);
-            document.addEventListener('touchend', onDragEnd);
+            document.addEventListener('touchend', onDragEnd, { passive: false });
         }
 
         function onDragMove(e) {
@@ -506,18 +511,23 @@ import {
             }
         }
 
-        function onDragEnd() {
+        function onDragEnd(e) {
             document.removeEventListener('mousemove', onDragMove);
             document.removeEventListener('touchmove', onDragMove);
             document.removeEventListener('mouseup', onDragEnd);
             document.removeEventListener('touchend', onDragEnd);
             
             if (!isDragging) {
+                if (e.type === 'touchend' && e.cancelable) {
+                    e.preventDefault(); 
+                }
+                
                 if (panel.classList.contains('is-open')) {
                     panel.classList.remove('is-open');
+                    input.blur();
                 } else {
                     panel.classList.add('is-open');
-                    input.focus(); 
+                    setTimeout(() => input.focus(), 10); 
                 }
             } else {
                 settings.widget_left = widget.style.left;
@@ -1051,6 +1061,11 @@ import {
                         <hr>
                         <h4>UI Configuration</h4>
                         
+                        <div class="flex-container alignitemscenter marginBot5">
+                            <label style="flex:1;">Widget Panel Width: <span id="cs_width_val">${settings.widget_width}</span>vw</label>
+                            <input type="range" id="cs_width" style="flex:1;" value="${settings.widget_width}" min="30" max="100">
+                        </div>
+
                         <div class="flex-container flexFlowColumn marginBot5">
                             <label for="cs_dbg">Debug Level (F12 Console)</label>
                             <select id="cs_dbg" class="text_pole">
@@ -1122,6 +1137,13 @@ import {
             });
         });
         
+        $("#cs_width").on("input", function() { 
+            settings.widget_width = this.value; 
+            $("#cs_width_val").text(this.value); 
+            document.documentElement.style.setProperty('--cs-panel-width', this.value + 'vw');
+            save(); 
+        });
+
         $("#cs_y_top").on("input", function() { settings.offset_top = this.value; $("#cs_y_top_val").text(this.value); updateContainerPosition(); save(); });
         $("#cs_y_bot").on("input", function() { settings.offset_bottom = this.value; $("#cs_y_bot_val").text(this.value); updateContainerPosition(); save(); });
 
