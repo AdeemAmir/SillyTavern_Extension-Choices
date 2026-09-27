@@ -10,6 +10,9 @@ settings.json
 choices_database.jsonl
 choices_db.jsonl
 choices_db.tmp
+Start.bat - Shortcut.lnk
+plugins - Shortcut.lnk
+default-user - Shortcut.lnk
 TODO.txt
 
 _bkup

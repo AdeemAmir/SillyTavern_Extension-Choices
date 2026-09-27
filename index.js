@@ -22,11 +22,10 @@ import {
     const REGEX_FALLBACK_LIST = /^[-•.*\s\d]+[\.\:\)]?\s+/;
 
     const defaultPrompts = {
-        userStyleTemplate: "### USER STYLE REFERENCE ###\n{{user_messages}}\n#####################",
-        instructionPrompt: `[System Note: TASK: Analyze the story context, the summary, and the User Style Reference.\n\n{{style_block}}\n\n{{matrix_block}}\n\nCRITICAL RULES:\n1. Length: Choices MUST be highly detailed, paragraph-length continuations (at least 3 to 5 sentences long).\n2. Content: Include specific immediate actions, rich sensory details, and dialogue. Stay in the immediate present scene. NO time-skips.\n3. JSON Format: Output ONLY a valid JSON array of objects.\n4. Keys: Each object MUST contain EXACTLY ONE key named "choice".\n5. The value of "choice" MUST be the actual narrative paragraph. DO NOT put numbers here. DO NOT add keys for descriptions, reasoning, or titles.\n\nExample format:\n[\n  {"choice": "I slowly back away from the door, my heart hammering against my ribs as the realization sets in. 'We can't stay here,' I whisper, grabbing my coat from the chair. Without waiting for a response, I move to the window, scanning the dark treeline for any sign of movement while frantically trying to piece together a new escape plan."},\n  {"choice": "Another highly detailed narrative paragraph goes here..."}\n]\n\nYou MUST wrap your output in a ${MD_JSON_START} codeblock. Open the codeblock immediately.]`,
+        instructionPrompt: `[System Note: TASK: Analyze the story context, the summary, and the Chat History above.\n\n{{matrix_block}}\n\nCRITICAL RULES:\n1. Length: Choices MUST be highly detailed, paragraph-length continuations (at least 3 to 5 sentences long).\n2. Content: Include specific immediate actions, rich sensory details, and dialogue. Stay in the immediate present scene. NO time-skips.\n3. JSON Format: Output ONLY a valid JSON array of objects.\n4. Keys: Each object MUST contain EXACTLY ONE key named "choice".\n5. The value of "choice" MUST be the actual narrative paragraph. DO NOT put numbers here. DO NOT add keys for descriptions, reasoning, or titles.\n\nExample format:\n[\n  {"choice": "I slowly back away from the door, my heart hammering against my ribs as the realization sets in. 'We can't stay here,' I whisper, grabbing my coat from the chair. Without waiting for a response, I move to the window, scanning the dark treeline for any sign of movement while frantically trying to piece together a new escape plan."},\n  {"choice": "Another highly detailed narrative paragraph goes here..."}\n]\n\nYou MUST wrap your output in a ${MD_JSON_START} codeblock. Open the codeblock immediately.]`,
         defaultMatrix: [
             { range: "1-2", text: "A highly detailed, logical continuation that realistically advances the current immediate scene." },
-            { range: "3-4", text: "A deeply immersive continuation tailored specifically to match the tone, vocabulary, and personality seen in the User Style Reference." },
+            { range: "3-4", text: "A deeply immersive continuation tailored specifically to match the narrative tone." },
             { range: "5", text: "A wildcard scenario shift introducing a sudden, unexpected action or detailed dialogue that drastically changes the immediate situation." }
         ]
     };
@@ -34,21 +33,21 @@ import {
     let settings = {
         enabled: true,
         includeSummary: true,
-        useUserStyle: true,
         dynamicMatrix: true,
         skipInterrupted: true,
         debugMode: 2,           
         numOptions: 5,
-        contextDepth: 6,
         generationDelay: 0,     
         layout: "column",
         position: "bottom",
         offset_top: 10,
         offset_bottom: 50,
         
+        storageMode: 'server', 
+        custom_db_path: '',
+        
         store_ai_context: true,
         store_summary: true,
-        store_user_style: true,
         store_full_prompt: true,
         store_raw_response: true,
         
@@ -57,7 +56,6 @@ import {
         modal_width: 95,
         modal_height: 90,
 
-        userStyleTemplate: defaultPrompts.userStyleTemplate,
         instructionPrompt: defaultPrompts.instructionPrompt,
         matrix: JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix))
     };
@@ -68,6 +66,22 @@ import {
     let wasInterrupted = false;
     let DOM_textarea = null; 
     let formObserver = null;
+    
+    // --- LOCAL INDEXED DB (Fallback) ---
+    const DB_NAME = "ST_Choices_LocalDB";
+    let localDB = null;
+    
+    function initLocalDB() {
+        return new Promise((resolve) => {
+            const req = indexedDB.open(DB_NAME, 1);
+            req.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains("logs")) db.createObjectStore("logs", { keyPath: "id" });
+            };
+            req.onsuccess = (e) => { localDB = e.target.result; resolve(true); };
+            req.onerror = () => resolve(false);
+        });
+    }
 
     function log(text, level = 1) {
         if (settings.debugMode >= level) {
@@ -78,21 +92,12 @@ import {
     async function loadSettings() {
         if (context.extensionSettings[MODULE_NAME]) {
             settings = Object.assign(settings, context.extensionSettings[MODULE_NAME]);
-            
-            // Clean settings.json of bloat if it exists
-            if (settings.history || settings.choiceHistory || settings.fails || settings.failedParses || settings.foreverLogText) {
-                delete settings.history;
-                delete settings.choiceHistory;
-                delete settings.fails;
-                delete settings.failedParses;
-                delete settings.foreverLogText;
-                save();
-            }
         }
         
         if (!settings.instructionPrompt) settings.instructionPrompt = defaultPrompts.instructionPrompt;
-        if (!settings.userStyleTemplate) settings.userStyleTemplate = defaultPrompts.userStyleTemplate;
         if (!settings.matrix) settings.matrix = JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix));
+        if (settings.storageMode === undefined) settings.storageMode = 'server';
+        if (settings.custom_db_path === undefined) settings.custom_db_path = '';
         
         if (settings.widget_width === undefined) settings.widget_width = 90;
         if (settings.choice_block_max_height === undefined) settings.choice_block_max_height = 40;
@@ -101,7 +106,6 @@ import {
         
         if (settings.store_ai_context === undefined) settings.store_ai_context = true;
         if (settings.store_summary === undefined) settings.store_summary = true;
-        if (settings.store_user_style === undefined) settings.store_user_style = true;
         if (settings.store_full_prompt === undefined) settings.store_full_prompt = true;
         if (settings.store_raw_response === undefined) settings.store_raw_response = true;
         
@@ -174,6 +178,7 @@ import {
 
     async function init() {
         log("Booting Choice Stream System...", 1);
+        await initLocalDB();
         await loadSettings();
         injectCSS();
         
@@ -233,20 +238,30 @@ import {
     }
 
     // --- IDENTIFICATION LOGIC ---
-    function getCurrentChatId() {
-        return context.chatId || "Unknown_Chat_ID";
+    function getChatIdentification() {
+        const charId = context.characterId;
+        const groupId = context.groupId;
+        let cName = "Unknown";
+        let cFile = context.chatId || "Unknown_Chat";
+
+        if (groupId && context.groups) {
+            const group = context.groups.find(g => g.id === groupId || g.uid === groupId);
+            if (group) cName = group.name;
+        } else if (charId !== undefined && context.characters) {
+            const char = context.characters[charId];
+            if (char) cName = char.name;
+        } else if (context.name2) {
+            cName = context.name2;
+        }
+        return { character_or_group_name: cName, chat_name: cFile };
     }
 
-    function getCurrentChatName() {
-        if (context.groupId && Array.isArray(context.groups)) {
-            const group = context.groups.find(g => g.id === context.groupId || g.uid === context.groupId);
-            if (group && group.name) return group.name;
-        }
-        if (context.characterId !== undefined && Array.isArray(context.characters)) {
-            const char = context.characters[context.characterId];
-            if (char && char.name) return char.name;
-        }
-        return context.name2 || "Unknown Chat";
+    function generateUniqueId() {
+        const d = new Date();
+        const pad = (n, m=2) => String(n).padStart(m, '0');
+        const prefix = `${String(d.getFullYear()).slice(2)}${pad(d.getMonth()+1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}${pad(d.getMilliseconds(), 3)}`;
+        const hash = Math.random().toString(36).substring(2, 8);
+        return `${prefix}_${hash}`;
     }
 
     function extractAIResponseContext() {
@@ -260,87 +275,104 @@ import {
         return "No AI message found.";
     }
 
-    // --- OFFICIAL SERVER PLUGIN API HOOKS ---
+    // --- UNIFIED DB ABSTRACTION (SERVER vs INDEXEDDB) ---
     function getApiHeaders() {
         let headers = { 'Content-Type': 'application/json' };
         try {
-            if (typeof getRequestHeaders === 'function') {
-                Object.assign(headers, getRequestHeaders());
-            }
+            if (typeof getRequestHeaders === 'function') Object.assign(headers, getRequestHeaders());
         } catch (e) {
-            const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
-            headers['X-CSRF-Token'] = token;
+            headers['X-CSRF-Token'] = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
         }
         return headers;
     }
-    
-    async function apiGetDB() {
-        try {
-            return await $.ajax({
-                url: '/api/plugins/st_choices_backend/db',
-                type: 'GET',
-                headers: getApiHeaders(),
-                dataType: 'json'
-            });
-        } catch (e) {
-            if (e.status === 404) {
-                if(window.toastr) window.toastr.error("Choice Stream database not found! Ensure st_choices_backend is correctly placed in plugins/ and you restarted ST.", "Backend Error", {timeOut: 8000});
+
+    const DB = {
+        async log(payload) {
+            if (settings.storageMode === 'server') {
+                try {
+                    payload.db_path = settings.custom_db_path || "";
+                    await $.ajax({ url: `/api/plugins/${MODULE_NAME}/log`, type: 'POST', headers: getApiHeaders(), contentType: 'application/json', data: JSON.stringify(payload) });
+                } catch (e) { log("API Log Error: " + e.responseText, 1); }
             } else {
-                if(window.toastr) window.toastr.error("DB Fetch Error: " + e.statusText, "Choice Stream");
+                if(!localDB) return;
+                const tx = localDB.transaction("logs", "readwrite");
+                const store = tx.objectStore("logs");
+                
+                const all = await this.getAll();
+                payload.global_num = all.length > 0 ? all[all.length - 1].global_num + 1 : 1;
+                const chatRecords = all.filter(r => r.chat_name === payload.chat_name);
+                payload.chat_num = chatRecords.length > 0 ? chatRecords[chatRecords.length - 1].chat_num + 1 : 1;
+                
+                store.add(payload);
             }
-            log("API Fetch Error: " + e.responseText, 1);
-            return [];
-        }
-    }
-
-    async function apiLogEvent(payload) {
-        try {
-            await $.ajax({
-                url: '/api/plugins/st_choices_backend/log',
-                type: 'POST',
-                headers: getApiHeaders(),
-                contentType: 'application/json',
-                data: JSON.stringify(payload)
-            });
-        } catch (e) {
-            if (e.status === 404) {
-                if(window.toastr) window.toastr.error("Cannot save choices! Backend is missing. Ensure the backend folder is in plugins/.", "Extension Setup Error");
+        },
+        async getAll() {
+            if (settings.storageMode === 'server') {
+                try {
+                    const encodedPath = encodeURIComponent(settings.custom_db_path || "");
+                    return await $.ajax({ url: `/api/plugins/${MODULE_NAME}/db?db_path=${encodedPath}`, type: 'GET', headers: getApiHeaders(), dataType: 'json' });
+                } catch (e) {
+                    if (e.status === 404 && window.toastr) window.toastr.error("Choice Stream backend not found! Please run the installer script.", "Backend Error");
+                    return [];
+                }
+            } else {
+                return new Promise(resolve => {
+                    if(!localDB) return resolve([]);
+                    const tx = localDB.transaction("logs", "readonly");
+                    const req = tx.objectStore("logs").getAll();
+                    req.onsuccess = () => resolve(req.result || []);
+                });
             }
-            log("API Log Error: " + e.responseText, 1);
+        },
+        async delete(id) {
+            if (settings.storageMode === 'server') {
+                try { await $.ajax({ url: `/api/plugins/${MODULE_NAME}/delete`, type: 'POST', headers: getApiHeaders(), contentType: 'application/json', data: JSON.stringify({ id: id, db_path: settings.custom_db_path || "" }) }); } catch (e) {}
+            } else {
+                if(!localDB) return;
+                localDB.transaction("logs", "readwrite").objectStore("logs").delete(id);
+            }
+        },
+        async clear(type) {
+            if (settings.storageMode === 'server') {
+                try { await $.ajax({ url: `/api/plugins/${MODULE_NAME}/clear`, type: 'POST', headers: getApiHeaders(), contentType: 'application/json', data: JSON.stringify({ type: type, db_path: settings.custom_db_path || "" }) }); } catch (e) {}
+            } else {
+                if(!localDB) return;
+                if (type === "ALL") localDB.transaction("logs", "readwrite").objectStore("logs").clear();
+                else {
+                    const all = await this.getAll();
+                    const tx = localDB.transaction("logs", "readwrite");
+                    const store = tx.objectStore("logs");
+                    all.filter(r => r.status === type).forEach(r => store.delete(r.id));
+                }
+            }
+        },
+        async importData(records) {
+            if (settings.storageMode === 'server') {
+                try { await $.ajax({ url: `/api/plugins/${MODULE_NAME}/import`, type: 'POST', headers: getApiHeaders(), contentType: 'application/json', data: JSON.stringify({ records: records, db_path: settings.custom_db_path || "" }) }); } catch (e) {}
+            } else {
+                if(!localDB) return;
+                let all = await this.getAll();
+                let currentGlobal = all.length > 0 ? all[all.length - 1].global_num : 0;
+                
+                const tx = localDB.transaction("logs", "readwrite");
+                const store = tx.objectStore("logs");
+                for(let data of records) {
+                    currentGlobal++;
+                    const chatRecords = all.filter(r => r.chat_name === data.chat_name);
+                    const chat_num = chatRecords.length > 0 ? chatRecords[chatRecords.length - 1].chat_num + 1 : 1;
+                    data.global_num = currentGlobal;
+                    data.chat_num = chat_num;
+                    all.push(data); 
+                    store.add(data);
+                }
+            }
         }
-    }
+    };
 
-    async function apiDeleteRecord(global_id) {
-        try {
-            await $.ajax({
-                url: '/api/plugins/st_choices_backend/delete',
-                type: 'POST',
-                headers: getApiHeaders(),
-                contentType: 'application/json',
-                data: JSON.stringify({ global_id: Number(global_id) })
-            });
-        } catch (e) {
-            if(window.toastr) window.toastr.error("Failed to delete record.", "Choice Stream");
-        }
-    }
-
-    async function apiClearDB(type = "ALL") {
-        try {
-            await $.ajax({
-                url: '/api/plugins/st_choices_backend/clear',
-                type: 'POST',
-                headers: getApiHeaders(),
-                contentType: 'application/json',
-                data: JSON.stringify({ type })
-            });
-        } catch (e) {
-            if(window.toastr) window.toastr.error("Failed to wipe database.", "Choice Stream");
-        }
-    }
-
-    async function downloadDatasetJSON() {
-        const logs = await apiGetDB();
-        if (!logs || logs.length === 0) return alert("No log data available to download.");
+    // --- IMPORT/EXPORT UI ---
+    async function handleExport() {
+        const logs = await DB.getAll();
+        if (!logs || logs.length === 0) return alert("No log data available to export.");
         
         const blob = new Blob([JSON.stringify(logs, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
@@ -349,6 +381,36 @@ import {
         a.href = url;
         a.click();
         URL.revokeObjectURL(url);
+    }
+
+    function handleImport() {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json,.jsonl';
+        input.onchange = e => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = async event => {
+                try {
+                    const text = event.target.result;
+                    let records = [];
+                    if (file.name.endsWith('.jsonl')) {
+                        records = text.split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
+                    } else {
+                        records = JSON.parse(text);
+                        if (!Array.isArray(records)) throw new Error("JSON must be an array of objects");
+                    }
+                    if (window.toastr) window.toastr.info(`Importing ${records.length} records...`, "Importing");
+                    await DB.importData(records);
+                    if (window.toastr) window.toastr.success(`Import complete!`, "Success");
+                } catch (err) {
+                    if (window.toastr) window.toastr.error("Invalid file format", "Import Failed");
+                }
+            };
+            reader.readAsText(file);
+        };
+        input.click();
     }
 
     function bindTapClose(element, callback) {
@@ -376,23 +438,23 @@ import {
         modalOverlay.id = 'cs_history_modal';
         modalOverlay.className = 'cs-modal-overlay';
         
-        const currentChatId = getCurrentChatId();
-        let allRecords = await apiGetDB();
+        const { chat_name } = getChatIdentification();
+        let allRecords = await DB.getAll();
         
         let allClusters = allRecords.filter(r => r.status === "SUCCESS");
-        allClusters.sort((a,b) => b.timestamp - a.timestamp);
+        allClusters.sort((a,b) => (b.global_num || 0) - (a.global_num || 0));
         
         const chatKeysMap = {};
-        allClusters.forEach(c => chatKeysMap[c.chat_id] = c.chat_name);
+        allClusters.forEach(c => chatKeysMap[c.chat_name] = c.character_or_group_name);
 
         let filtered = allClusters;
         if (filterChat !== "__ALL__") {
-            filtered = filtered.filter(c => c.chat_id === filterChat);
+            filtered = filtered.filter(c => c.chat_name === filterChat);
         }
         if (searchKeyword.trim() !== "") {
             const kw = searchKeyword.toLowerCase();
             filtered = filtered.filter(c => 
-                (c.chat_name && c.chat_name.toLowerCase().includes(kw)) || 
+                (c.character_or_group_name && c.character_or_group_name.toLowerCase().includes(kw)) || 
                 (c.choices && c.choices.some(choice => choice.toLowerCase().includes(kw))) ||
                 (c.custom_direction && c.custom_direction.toLowerCase().includes(kw)) ||
                 (c.ai_context && c.ai_context.toLowerCase().includes(kw))
@@ -400,13 +462,13 @@ import {
         }
 
         let chatOptionsHtml = `<option value="__ALL__" ${filterChat === '__ALL__' ? 'selected' : ''}>All Chats (${allClusters.length} total saves)</option>`;
-        const chatKeysArr = Object.keys(chatKeysMap).sort((a,b) => a === currentChatId ? -1 : (b === currentChatId ? 1 : chatKeysMap[a].localeCompare(chatKeysMap[b])));
+        const chatKeysArr = Object.keys(chatKeysMap).sort((a,b) => a === chat_name ? -1 : (b === chat_name ? 1 : chatKeysMap[a].localeCompare(chatKeysMap[b])));
         
-        chatKeysArr.forEach(chatId => {
-            const isCurr = chatId === currentChatId ? '★ [Current] ' : '';
-            const count = allClusters.filter(c => c.chat_id === chatId).length;
-            const cName = chatKeysMap[chatId] || chatId;
-            chatOptionsHtml += `<option value="${chatId}" ${filterChat === chatId ? 'selected' : ''}>${isCurr}${cName} (${count})</option>`;
+        chatKeysArr.forEach(cId => {
+            const isCurr = cId === chat_name ? '★ [Current] ' : '';
+            const count = allClusters.filter(c => c.chat_name === cId).length;
+            const dispName = chatKeysMap[cId] || cId;
+            chatOptionsHtml += `<option value="${cId}" ${filterChat === cId ? 'selected' : ''}>${isCurr}${dispName} (${count})</option>`;
         });
 
         let bodyHtml = "";
@@ -414,23 +476,27 @@ import {
             bodyHtml = `<div style="text-align:center; padding: 40px 10px; color: rgba(255,255,255,0.4);">No saved choice history matches the criteria.</div>`;
         } else {
             filtered.forEach(cluster => {
-                const totalWords = cluster.choices.reduce((acc, c) => acc + (c.trim() ? c.trim().split(/\s+/).length : 0), 0);
-                const totalChars = cluster.choices.reduce((acc, c) => acc + c.length, 0);
+                const totalWords = cluster.choices ? cluster.choices.reduce((acc, c) => acc + (c.trim() ? c.trim().split(/\s+/).length : 0), 0) : 0;
+                const totalChars = cluster.choices ? cluster.choices.reduce((acc, c) => acc + c.length, 0) : 0;
                 const estTokens = Math.round(totalWords * 1.3);
+                
+                // Format ID for display
+                const rawId = cluster.id || "Unknown";
+                const displayId = rawId.includes('_') ? rawId.split('_')[0] : rawId;
 
                 bodyHtml += `
-                    <div class="cs-history-cluster" data-id="${cluster.global_id}">
+                    <div class="cs-history-cluster" data-id="${cluster.id}">
                         <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:6px;">
                             <div style="display:flex; flex-direction:column; gap:4px;">
                                 <div style="font-weight:bold; font-size:0.95rem; color:#a78bfa;">
-                                    ${cluster.chat_name} 
-                                    ${cluster.chat_id === currentChatId ? '<span style="color:#10b981; font-size:0.75rem; font-weight:normal;">(Active Chat)</span>' : ''}
+                                    ${cluster.character_or_group_name} 
+                                    ${cluster.chat_name === chat_name ? '<span style="color:#10b981; font-size:0.75rem; font-weight:normal;">(Active Chat)</span>' : ''}
                                 </div>
                                 <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                                    <span class="cs-stat-pill" title="Global DB ID">ID: ${cluster.global_id}</span>
-                                    <span class="cs-stat-pill" title="Chat-Specific Generation ID">Chat#: ${cluster.chat_num}</span>
-                                    <span class="cs-stat-pill"><i class="fa-solid fa-clock"></i> ${cluster.datetime}</span>
-                                    <span class="cs-stat-pill" style="color:#38bdf8;"><i class="fa-solid fa-list-ol"></i> ${cluster.choices.length} options</span>
+                                    <span class="cs-stat-pill" title="Global DB Num">G# ${cluster.global_num}</span>
+                                    <span class="cs-stat-pill" title="Chat-Specific Generation ID">C# ${cluster.chat_num}</span>
+                                    <span class="cs-stat-pill" title="Timestamp ID"><i class="fa-solid fa-clock"></i> ${displayId}</span>
+                                    <span class="cs-stat-pill" style="color:#38bdf8;"><i class="fa-solid fa-list-ol"></i> ${(cluster.choices||[]).length} options</span>
                                     <span class="cs-stat-pill"><i class="fa-solid fa-font"></i> ${totalWords}w / ${totalChars}c</span>
                                 </div>
                                 ${cluster.custom_direction ? `<div style="font-size:0.8rem; color:#f472b6;"><b>Prompt:</b> "${cluster.custom_direction}"</div>` : ''}
@@ -447,7 +513,7 @@ import {
                         </div>` : ''}
 
                         <div class="cs-cluster-preview" style="font-size:0.88rem; opacity:0.85; cursor:pointer;">
-                            ${cluster.choices.map((c, i) => `<div><span style="color:#8b5cf6;">[${i+1}]</span> ${c.substring(0, 110)}...</div>`).join('')}
+                            ${(cluster.choices||[]).map((c, i) => `<div><span style="color:#8b5cf6;">[${i+1}]</span> ${c.substring(0, 110)}...</div>`).join('')}
                         </div>
 
                         <div class="cs-toggle-inspect" style="font-size:0.8rem; color:#8b5cf6; cursor:pointer; text-decoration:underline;">
@@ -461,7 +527,7 @@ import {
                                 <div style="margin-top:4px; max-height:80px; overflow-y:auto; opacity:0.85;">${cluster.ai_context.replace(/</g, '&lt;')}</div>
                             </div>` : ''}
                             
-                            ${cluster.choices.map((c, i) => {
+                            ${(cluster.choices||[]).map((c, i) => {
                                 const w = c.trim().split(/\s+/).length;
                                 return `
                                     <div class="cs-single-option">
@@ -487,8 +553,9 @@ import {
                 <div class="cs-modal-header">
                     <span style="font-size:1.1rem;"><i class="fa-solid fa-clock-rotate-left"></i> Choice Database</span>
                     <div style="display:flex; gap:8px;">
-                        <button id="cs_hist_download_btn" class="menu_button cs-touch-btn margin0" title="Export Dataset to JSON"><i class="fa-solid fa-file-export"></i> Dataset</button>
-                        <button id="cs_hist_clearall_btn" class="menu_button cs-touch-btn margin0" style="color:#ef4444;"><i class="fa-solid fa-trash"></i> Wipe</button>
+                        <button id="cs_hist_download_btn" class="menu_button cs-touch-btn margin0" title="Export Dataset"><i class="fa-solid fa-file-export"></i> Export</button>
+                        <button id="cs_hist_import_btn" class="menu_button cs-touch-btn margin0" title="Import Dataset"><i class="fa-solid fa-file-import"></i> Import</button>
+                        <button id="cs_hist_clearall_btn" class="menu_button cs-touch-btn margin0" style="color:#ef4444;"><i class="fa-solid fa-trash"></i> Wipe DB</button>
                         <button id="cs_hist_head_close" class="menu_button cs-touch-btn margin0" style="background:rgba(239,68,68,0.2);"><i class="fa-solid fa-xmark"></i> Close</button>
                     </div>
                 </div>
@@ -515,15 +582,11 @@ import {
         bindTapClose(document.getElementById('cs_hist_foot_close'), closeModal);
         modalOverlay.addEventListener('click', (e) => { if (e.target === modalOverlay) closeModal(); });
 
-        $('#cs_hist_chat_select').on('change', function() {
-            showHistoryModal(this.value, $('#cs_hist_search_input').val());
-        });
+        $('#cs_hist_chat_select').on('change', function() { showHistoryModal(this.value, $('#cs_hist_search_input').val()); });
         $('#cs_hist_search_input').on('input', function() {
             const val = this.value;
             clearTimeout(window.__cs_search_timer);
-            window.__cs_search_timer = setTimeout(() => {
-                showHistoryModal($('#cs_hist_chat_select').val(), val);
-            }, 300);
+            window.__cs_search_timer = setTimeout(() => { showHistoryModal($('#cs_hist_chat_select').val(), val); }, 300);
         });
 
         modalOverlay.querySelectorAll('.cs-toggle-inspect').forEach(el => {
@@ -539,19 +602,17 @@ import {
 
         modalOverlay.querySelectorAll('.cs-load-cluster-btn').forEach(btn => {
             btn.onclick = () => {
-                const parent = btn.closest('.cs-history-cluster');
-                const id = Number(parent.getAttribute('data-id'));
-                const cluster = filtered.find(c => c.global_id === id);
-                if (cluster) renderChoices(cluster.choices);
+                const id = btn.closest('.cs-history-cluster').getAttribute('data-id');
+                const cluster = filtered.find(c => c.id === id);
+                if (cluster && cluster.choices) renderChoices(cluster.choices);
                 closeModal();
             };
         });
 
         modalOverlay.querySelectorAll('.cs-del-cluster-btn').forEach(btn => {
             btn.onclick = async () => {
-                const parent = btn.closest('.cs-history-cluster');
-                const id = Number(parent.getAttribute('data-id'));
-                await apiDeleteRecord(id);
+                const id = btn.closest('.cs-history-cluster').getAttribute('data-id');
+                await DB.delete(id);
                 showHistoryModal($('#cs_hist_chat_select').val(), $('#cs_hist_search_input').val());
             };
         });
@@ -582,11 +643,13 @@ import {
             };
         });
 
-        document.getElementById('cs_hist_download_btn').onclick = downloadDatasetJSON;
+        document.getElementById('cs_hist_download_btn').onclick = handleExport;
+        document.getElementById('cs_hist_import_btn').onclick = () => { handleImport(); setTimeout(()=>showHistoryModal(), 2000); };
+        
         document.getElementById('cs_hist_clearall_btn').onclick = async () => {
             if (confirm("WARNING: This will permanently delete ALL successful choice history records.\n\nProceed?")) {
-                if (confirm("SECOND CONFIRMATION:\n\nAre you absolutely sure? This will instantly wipe the data from your database file and CANNOT be undone.")) {
-                    await apiClearDB("SUCCESS");
+                if (confirm("SECOND CONFIRMATION:\n\nAre you absolutely sure? This CANNOT be undone.")) {
+                    await DB.clear("SUCCESS");
                     showHistoryModal();
                 }
             }
@@ -600,9 +663,9 @@ import {
         modalOverlay.id = 'cs_failed_modal';
         modalOverlay.className = 'cs-modal-overlay';
         
-        let allRecords = await apiGetDB();
+        let allRecords = await DB.getAll();
         const fails = allRecords.filter(r => r.status === "FAIL");
-        fails.sort((a,b) => b.timestamp - a.timestamp);
+        fails.sort((a,b) => (b.global_num || 0) - (a.global_num || 0));
 
         let bodyHtml = "";
         if (fails.length === 0) {
@@ -610,20 +673,23 @@ import {
         } else {
             fails.forEach(fail => {
                 const wordCount = (fail.raw_response || "").trim().split(/\s+/).length;
+                const rawId = fail.id || "Unknown";
+                const displayId = rawId.includes('_') ? rawId.split('_')[0] : rawId;
+
                 bodyHtml += `
                     <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.07); border-radius:6px; padding:10px;">
                         <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
                             <div>
-                                <b style="color:#ef4444;">${fail.chat_name}</b>
+                                <b style="color:#ef4444;">${fail.character_or_group_name}</b>
                                 <div style="display:flex; gap:6px; margin-top:3px; flex-wrap:wrap;">
-                                    <span class="cs-stat-pill" title="Global DB ID">ID: ${fail.global_id}</span>
-                                    <span class="cs-stat-pill">${fail.datetime}</span>
+                                    <span class="cs-stat-pill" title="Global DB Num">G# ${fail.global_num}</span>
+                                    <span class="cs-stat-pill" title="Timestamp ID"><i class="fa-solid fa-clock"></i> ${displayId}</span>
                                     <span class="cs-stat-pill">${wordCount} words / ${(fail.raw_response || "").length} chars</span>
                                 </div>
                             </div>
                             <div style="display:flex; gap:8px;">
                                 <button class="menu_button cs-touch-btn cs-fail-copy-btn margin0" data-text="${encodeURIComponent(fail.raw_response || '')}"><i class="fa-solid fa-copy"></i> Copy Raw</button>
-                                <button class="menu_button cs-touch-btn cs-fail-del-btn margin0" data-id="${fail.global_id}" style="color:#ef4444;"><i class="fa-solid fa-trash"></i></button>
+                                <button class="menu_button cs-touch-btn cs-fail-del-btn margin0" data-id="${fail.id}" style="color:#ef4444;"><i class="fa-solid fa-trash"></i></button>
                             </div>
                         </div>
 
@@ -677,8 +743,8 @@ import {
 
         modalOverlay.querySelectorAll('.cs-fail-del-btn').forEach(btn => {
             btn.onclick = async () => {
-                const id = Number(btn.getAttribute('data-id'));
-                await apiDeleteRecord(id);
+                const id = btn.getAttribute('data-id');
+                await DB.delete(id);
                 showFailedModal();
             };
         });
@@ -686,7 +752,7 @@ import {
         document.getElementById('cs_fail_clearall_btn').onclick = async () => {
             if (confirm("WARNING: This will permanently delete ALL failed parse records.\n\nProceed?")) {
                 if (confirm("SECOND CONFIRMATION:\n\nAre you sure you want to wipe the fails database? This CANNOT be undone.")) {
-                    await apiClearDB("FAIL");
+                    await DB.clear("FAIL");
                     showFailedModal();
                 }
             }
@@ -865,12 +931,7 @@ import {
             });
             
             if (targets.length > 0) {
-                let ruleText = rule.text;
-                if (!settings.useUserStyle) {
-                    ruleText = ruleText.replace(/the User Style Reference/gi, "the current narrative tone and context");
-                    ruleText = ruleText.replace(/User Style Reference/gi, "the narrative tone");
-                }
-                resolvedRules.push({ targets: targets, text: ruleText });
+                resolvedRules.push({ targets: targets, text: rule.text });
             }
         });
         return resolvedRules;
@@ -881,10 +942,10 @@ import {
         let resolvedRules = getResolvedMatrix(maxOptions, hasCustomDirection);
         
         if (resolvedRules.length === 0) {
-            return `Generate exactly ${maxOptions} distinct action/dialogue choices for {{user}}.\n`;
+            return `Generate exactly ${maxOptions} distinct action/dialogue choices.\n`;
         }
         
-        let matrixStr = `Generate exactly ${maxOptions} distinct action/dialogue choices for {{user}} following this precise matrix:\n`;
+        let matrixStr = `Generate exactly ${maxOptions} distinct action/dialogue choices following this precise matrix:\n`;
         resolvedRules.forEach(rule => {
             let targetsStr = rule.targets.length === 1 ? rule.targets[0].toString() : rule.targets.join(', ');
             matrixStr += `- Option${rule.targets.length > 1 ? 's' : ''} ${targetsStr}: ${rule.text}\n`;
@@ -894,37 +955,25 @@ import {
 
     function extractStorySummary() {
         if (!settings.includeSummary) return "";
-        const chat = context.chat;
-        if (!chat || chat.length === 0) return "";
-
-        for (let i = chat.length - 1; i >= 0; i--) {
-            if (chat[i].is_system && chat[i].mes && (chat[i].mes.includes("Summary:") || chat[i].mes.includes("<memory>"))) {
-                return `### STORY SUMMARY ###\n${chat[i].mes.trim()}`;
+        let sum = "";
+        
+        if (context.extensionSettings?.summarize?.summary) sum = context.extensionSettings.summarize.summary;
+        if (!sum && context.extensionSettings?.memory?.context) sum = context.extensionSettings.memory.context;
+        if (!sum && context.chatMetadata?.summary) sum = context.chatMetadata.summary;
+        if (!sum && context.chat) {
+            for (let i = context.chat.length - 1; i >= 0; i--) {
+                if (context.chat[i].is_system && context.chat[i].mes && (context.chat[i].mes.includes("Summary:") || context.chat[i].mes.includes("<memory>"))) {
+                    sum = context.chat[i].mes.trim();
+                    break;
+                }
             }
         }
-        if (context.extensionSettings?.memory?.summary) {
-            return `### STORY SUMMARY ###\n${context.extensionSettings.memory.summary}`;
-        }
-        return "";
-    }
-
-    function buildUserStyleProfile() {
-        if (!settings.useUserStyle) return "";
-        const chat = context.chat;
-        if (!chat || chat.length === 0) return "";
-        
-        const userMsgs = chat.slice(-15)
-            .filter(msg => msg.is_user && !msg.is_system && !msg.mes.startsWith('/'))
-            .map(msg => msg.mes.trim());
-            
-        if (userMsgs.length === 0) return "";
-        const styleString = userMsgs.slice(-3).join('\n---\n');
-        return settings.userStyleTemplate.replaceAll("{{user_messages}}", styleString);
+        return sum ? `### STORY SUMMARY ###\n${sum}` : "";
     }
 
     async function triggerGeneration(isTest = false, customDirection = "") {
         if (isGenerating) {
-            log("Generation already in progress. Ignoring duplicate request.", 1);
+            log("Generation already in progress.", 1);
             if (window.toastr) window.toastr.info("Choices generation already in progress...", "Please Wait");
             return;
         }
@@ -951,7 +1000,6 @@ import {
 
         isGenerating = true;
         const storySummary = extractStorySummary();
-        const userStyle = buildUserStyleProfile();
         const dynamicMatrix = buildMatrixPrompt(false);
         let compiledPrompt = "";
         let rawResponse = "";
@@ -960,15 +1008,10 @@ import {
         
         try {
             log(`Fetching ${settings.numOptions} choices from Native backend...`, 1);
-            
-            let safeUserName = context.name2 || "The Player";
-            if (safeUserName === "SillyTavern System" || safeUserName === "System") safeUserName = "The Player";
 
             let stInstruction = settings.instructionPrompt
                 .replaceAll("{{numOptions}}", settings.numOptions)
-                .replaceAll("{{style_block}}", userStyle)
-                .replaceAll("{{matrix_block}}", dynamicMatrix)
-                .replaceAll("{{user}}", safeUserName);
+                .replaceAll("{{matrix_block}}", dynamicMatrix);
 
             if (customDirection && customDirection.trim() !== "") {
                 const dirPrompt = `\n=====\nTARGET NARRATIVE DIRECTION\nALL choices MUST strictly execute or revolve around this specific intent: "${customDirection.trim()}"\nDO NOT deviate from this core premise!\n=====\n`;
@@ -980,6 +1023,7 @@ import {
                 }
             }
 
+            // generateQuietPrompt automatically injects chat history, we only append instruction
             compiledPrompt = storySummary ? `${storySummary}\n\n${stInstruction}` : stInstruction;
             
             rawResponse = await executeWithRetry(() => fetchRaw(compiledPrompt), 1, 3000);
@@ -999,22 +1043,21 @@ import {
             if (goBtnIcon) goBtnIcon.className = "fa-solid fa-play";
             
             if (rawResponse) {
+                const { character_or_group_name, chat_name } = getChatIdentification();
                 const payload = {
-                    datetime: new Date().toLocaleString(),
-                    timestamp: Date.now(),
-                    chat_id: getCurrentChatId(),
-                    chat_name: getCurrentChatName(),
+                    id: generateUniqueId(),
+                    character_or_group_name,
+                    chat_name,
                     status: isSuccess ? "SUCCESS" : "FAIL",
                     ai_context: settings.store_ai_context ? extractAIResponseContext() : "",
                     story_summary: settings.store_summary ? storySummary : "",
-                    user_style: settings.store_user_style ? userStyle : "",
                     custom_direction: customDirection.trim(),
                     full_prompt: settings.store_full_prompt ? compiledPrompt : "",
                     raw_response: settings.store_raw_response ? rawResponse : "",
                     choices: isSuccess ? choices : []
                 };
 
-                apiLogEvent(payload);
+                DB.log(payload);
             }
         }
     }
@@ -1269,14 +1312,25 @@ import {
                         </div>
                         
                         <hr>
-                        <h4>Data Logging & Machine Learning</h4>
-                        <div style="font-size:0.8rem; color:#94a3b8; margin-bottom:8px;">Select which metadata to include in the DB for future AI training/analysis.</div>
-                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px;">
-                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_ai_context" ${settings.store_ai_context ? "checked" : ""}><span>AI Context</span></label>
-                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_summary" ${settings.store_summary ? "checked" : ""}><span>Story Summary</span></label>
-                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_user_style" ${settings.store_user_style ? "checked" : ""}><span>User Style</span></label>
-                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_full_prompt" ${settings.store_full_prompt ? "checked" : ""}><span>Full Prompt</span></label>
-                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_raw_response" ${settings.store_raw_response ? "checked" : ""}><span>Raw Response</span></label>
+                        <h4>Storage & Database Configuration</h4>
+                        <div style="font-size:0.8rem; color:#94a3b8; margin-bottom:8px;">Choose where to save your generated history. Server Mode requires running the Python Installation Script.</div>
+                        <div class="flex-container alignitemscenter marginBot5">
+                            <label style="flex:1;">Storage Engine:</label>
+                            <select id="cs_storageMode" class="text_pole" style="flex:1;">
+                                <option value="server" ${settings.storageMode === 'server' ? 'selected' : ''}>Server (.jsonl File)</option>
+                                <option value="local" ${settings.storageMode === 'local' ? 'selected' : ''}>Local (IndexedDB)</option>
+                            </select>
+                        </div>
+                        <div class="flex-container alignitemscenter marginBot5">
+                            <label style="flex:1;" title="Leave empty to use ST default user data path">Custom DB Path (Absolute):</label>
+                            <input type="text" id="cs_custom_db_path" class="text_pole" style="flex:1;" placeholder="e.g. D:\\MySTData\\choices_db.jsonl" value="${settings.custom_db_path}">
+                        </div>
+
+                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; margin-top: 8px;">
+                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_ai_context" ${settings.store_ai_context ? "checked" : ""}><span>Log AI Context</span></label>
+                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_summary" ${settings.store_summary ? "checked" : ""}><span>Log Summary</span></label>
+                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_full_prompt" ${settings.store_full_prompt ? "checked" : ""}><span>Log Full Prompt</span></label>
+                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_raw_response" ${settings.store_raw_response ? "checked" : ""}><span>Log Raw Response</span></label>
                         </div>
                         
                         <hr>
@@ -1285,10 +1339,6 @@ import {
                         <div class="flex-container alignitemscenter marginBot5">
                             <label style="flex:1;">Widget Width: <span id="cs_width_val">${settings.widget_width}</span>vw</label>
                             <input type="range" id="cs_width" style="flex:1;" value="${settings.widget_width}" min="30" max="100">
-                        </div>
-                        <div class="flex-container alignitemscenter marginBot5">
-                            <label style="flex:1;">Choices Max Height: <span id="cs_height_choices_val">${settings.choice_block_max_height}</span>vh</label>
-                            <input type="range" id="cs_height_choices" style="flex:1;" value="${settings.choice_block_max_height}" min="20" max="90">
                         </div>
                         <div class="flex-container alignitemscenter marginBot5">
                             <label style="flex:1;">Menus Width: <span id="cs_width_modal_val">${settings.modal_width}</span>vw</label>
@@ -1300,12 +1350,17 @@ import {
                         </div>
 
                         <div class="flex-container alignitemscenter marginBot5">
-                            <label style="flex:1;">Dock Position</label>
+                            <label style="flex:1;">Choices Dock Position</label>
                             <select id="cs_pos" class="text_pole" style="flex:1;">
                                 <option value="top" ${settings.position=='top'?'selected':''}>Top (Below Top Bar)</option>
                                 <option value="bottom" ${settings.position=='bottom'?'selected':''}>Bottom (Above Input Bar)</option>
                             </select>
                         </div>
+                        <div class="flex-container alignitemscenter marginBot5">
+                            <label style="flex:1;">Choices Max Height: <span id="cs_height_choices_val">${settings.choice_block_max_height}</span>vh</label>
+                            <input type="range" id="cs_height_choices" style="flex:1;" value="${settings.choice_block_max_height}" min="20" max="90">
+                        </div>
+                        
                         <div class="flex-container alignitemscenter marginBot5">
                             <label style="flex:1;">Vertical Offset (Top): <span id="cs_y_top_val">${settings.offset_top}</span>px</label>
                             <input type="range" id="cs_y_top" style="flex:1;" value="${settings.offset_top}" min="0" max="500">
@@ -1332,9 +1387,6 @@ import {
                             <label class="checkbox_label flex-container" title="Inject ST's running summary into the choice generator.">
                                 <input type="checkbox" id="cs_include_summary" ${settings.includeSummary ? "checked" : ""}><span>Include Lore</span>
                             </label>
-                            <label class="checkbox_label flex-container" title="Extract past messages to teach the LLM your writing style.">
-                                <input type="checkbox" id="cs_use_user_style" ${settings.useUserStyle ? "checked" : ""}><span>Enable Profile</span>
-                            </label>
                             <label class="checkbox_label flex-container" title="Automatically structure options using the matrix below.">
                                 <input type="checkbox" id="cs_dynamic_matrix" ${settings.dynamicMatrix ? "checked" : ""}><span>Use Matrix</span>
                             </label>
@@ -1343,17 +1395,17 @@ import {
                         <div class="flex-container flexFlowColumn marginBot5" style="border-left: 2px solid var(--SmartThemeBorderColor); padding-left: 10px;">
                             <div class="flex-container alignitemscenter justifySpaceBetween">
                                 <label><strong>Option Tone Matrix</strong></label>
-                                <div id="cs_add_matrix" class="menu_button interactable cs-touch-btn margin0" tabindex="0" role="button" style="padding: 2px 8px; font-size: 0.85rem;">
-                                    <i class="fa-solid fa-plus"></i> Add Rule
+                                <div style="display:flex; gap: 4px;">
+                                    <div id="cs_import_matrix_file" class="menu_button interactable cs-touch-btn margin0" tabindex="0" role="button" style="padding: 2px 8px; font-size: 0.85rem;" title="Import from Text File (.txt)">
+                                        <i class="fa-solid fa-file-import"></i> Import (.txt)
+                                    </div>
+                                    <div id="cs_add_matrix" class="menu_button interactable cs-touch-btn margin0" tabindex="0" role="button" style="padding: 2px 8px; font-size: 0.85rem;">
+                                        <i class="fa-solid fa-plus"></i> Add
+                                    </div>
                                 </div>
                             </div>
                             <div id="cs_matrix_warning" style="color: #ef4444; font-size: 0.85rem; margin-top: 4px; display: none;"><i class="fa-solid fa-triangle-exclamation"></i> Warning: Targets exceed Options.</div>
                             <div id="cs_matrix_list" class="flex-container flexFlowColumn marginTop5"></div>
-                        </div>
-
-                        <div class="flex-container flexFlowColumn marginBot5">
-                            <label for="cs_user_style_template"><strong>User Style Block Template</strong></label>
-                            <textarea id="cs_user_style_template" class="text_pole textarea_compact autoSetHeight" rows="3">${settings.userStyleTemplate}</textarea>
                         </div>
                         
                         <div class="flex-container flexFlowColumn marginBot5">
@@ -1393,18 +1445,18 @@ import {
             icon.toggleClass('fa-circle-chevron-down fa-circle-chevron-up');
         });
 
-        const chkMap = ['cs_active', 'cs_skip_interrupt', 'cs_include_summary', 'cs_use_user_style', 'cs_dynamic_matrix', 'cs_store_ai_context', 'cs_store_summary', 'cs_store_user_style', 'cs_store_full_prompt', 'cs_store_raw_response'];
+        const chkMap = ['cs_active', 'cs_skip_interrupt', 'cs_include_summary', 'cs_dynamic_matrix', 'cs_store_ai_context', 'cs_store_summary', 'cs_store_full_prompt', 'cs_store_raw_response'];
         chkMap.forEach(id => {
             $(`#${id}`).on("change", function() { 
                 const key = id.replace("cs_", "");
                 settings[key] = this.checked; 
-                if (id === 'cs_use_user_style' || id === 'cs_dynamic_matrix') updateMatrixUI(); 
+                if (id === 'cs_dynamic_matrix') updateMatrixUI(); 
                 save(); 
             });
         });
         
         $(`#cs_instruction_prompt`).on("input", function() { settings.instructionPrompt = this.value; save(); });
-        $(`#cs_user_style_template`).on("input", function() { settings.userStyleTemplate = this.value; save(); });
+        $(`#cs_custom_db_path`).on("input", function() { settings.custom_db_path = this.value; save(); });
         
         ["cs_num", "cs_delay"].forEach(id => {
             $(`#${id}`).on("input", function() { 
@@ -1431,9 +1483,9 @@ import {
             });
         }
 
+        $("#cs_storageMode").on("change", function() { settings.storageMode = this.value; save(); });
         $("#cs_y_top").on("input", function() { settings.offset_top = this.value; $("#cs_y_top_val").text(this.value); updateContainerPosition(); save(); });
         $("#cs_y_bot").on("input", function() { settings.offset_bottom = this.value; $("#cs_y_bot_val").text(this.value); updateContainerPosition(); save(); });
-
         $("#cs_pos").on("change", function() { settings.position = this.value; updateContainerPosition(); save(); });
 
         $("#cs_test").on("click", (e) => { e.stopPropagation(); triggerGeneration(true); });
@@ -1461,15 +1513,46 @@ import {
             updateMatrixUI();
             save();
         });
+        
+        $("#cs_import_matrix_file").on("click", (e) => {
+            e.stopPropagation();
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.txt';
+            input.onchange = e => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = event => {
+                    const lines = event.target.result.split('\n');
+                    let added = 0;
+                    lines.forEach(line => {
+                        // Safely capture ranges (1-2, 3), delimiters (: | -), and string remainder, bypassing interior commas
+                        let match = line.match(/^([\d\s\-,]+)[\s:|-]+(.+)$/);
+                        if (match) {
+                            settings.matrix.push({ range: match[1].trim(), text: match[2].trim() });
+                            added++;
+                        }
+                    });
+                    if (added > 0) {
+                        if (window.toastr) window.toastr.success(`Imported ${added} rules!`, "Matrix");
+                        updateMatrixUI();
+                        save();
+                    } else {
+                        if (window.toastr) window.toastr.warning("No valid rules found in file.", "Matrix");
+                    }
+                };
+                reader.readAsText(file);
+            };
+            input.click();
+        });
 
         $("#cs_reset_prompts").on("click", (e) => {
             e.stopPropagation();
             if(confirm("Restore default JSON prompts?")) {
                 settings.instructionPrompt = defaultPrompts.instructionPrompt;
-                settings.userStyleTemplate = defaultPrompts.userStyleTemplate;
                 settings.matrix = JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix));
                 $("#cs_instruction_prompt").val(settings.instructionPrompt);
-                $("#cs_user_style_template").val(settings.userStyleTemplate);
                 updateMatrixUI();
                 save();
             }
