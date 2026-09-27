@@ -1,7 +1,8 @@
 import {
     eventSource,
     event_types,
-    generateQuietPrompt
+    generateQuietPrompt,
+    getRequestHeaders
 } from '../../../../script.js';
 
 import {
@@ -252,15 +253,21 @@ import {
         return "No AI message found.";
     }
 
-    // --- UNIFIED SERVER.JS API HOOKS WITH CSRF PROTECTION ---
+    // --- UNIFIED SERVER.JS API HOOKS WITH NATIVE CSRF PROTECTION ---
     
     function getApiHeaders() {
-        // SillyTavern requires CSRF tokens for all backend API modifications
-        const token = window.csrf_token || '';
-        return {
-            'Content-Type': 'application/json',
-            'X-CSRF-Token': token
-        };
+        let headers = { 'Content-Type': 'application/json' };
+        try {
+            // Merge in SillyTavern's official CSRF token via its native function
+            if (typeof getRequestHeaders === 'function') {
+                Object.assign(headers, getRequestHeaders());
+            }
+        } catch (e) {
+            // Robust fallback to DOM extraction if the import fails
+            const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+            headers['X-CSRF-Token'] = token;
+        }
+        return headers;
     }
     
     async function apiGetDB() {
