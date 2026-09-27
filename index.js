@@ -849,8 +849,15 @@ import {
             const choices = await executeWithRetry(() => fetchChoices(storySummary, userStyle, dynamicMatrix, customDirection), 1, 3000);
             
             if (choices && choices.length > 0) {
-                saveToHistory(choices, customDirection);
+                // FIXED: We render the choices visually FIRST before attempting to save to logs.
+                // This prevents silent storage/memory limits from aborting the script before the popup appears.
                 renderChoices(choices);
+                
+                try {
+                    saveToHistory(choices, customDirection);
+                } catch (historyErr) {
+                    log("Warning: Failed to save to history: " + historyErr.message, 1);
+                }
             }
         } catch (e) { 
             log("Fetch failed completely: " + e.message, 1); 
