@@ -1,7 +1,8 @@
 import {
     eventSource,
     event_types,
-    generateQuietPrompt
+    generateQuietPrompt,
+    getRequestHeaders
 } from '../../../../script.js';
 
 import {
@@ -252,16 +253,35 @@ import {
         return "No AI message found.";
     }
 
-    // --- UNIFIED SERVER.JS API HOOKS VIA JQUERY (BYPASSES CSRF ERRORS) ---
+    // --- UNIFIED SERVER.JS API HOOKS WITH NOTIFICATIONS ---
+    
+    function getApiHeaders() {
+        let headers = { 'Content-Type': 'application/json' };
+        try {
+            if (typeof getRequestHeaders === 'function') {
+                Object.assign(headers, getRequestHeaders());
+            }
+        } catch (e) {
+            const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+            headers['X-CSRF-Token'] = token;
+        }
+        return headers;
+    }
     
     async function apiGetDB() {
         try {
             return await $.ajax({
                 url: '/api/extensions/st_choice_stream/db',
                 type: 'GET',
+                headers: getApiHeaders(),
                 dataType: 'json'
             });
         } catch (e) {
+            if (e.status === 404) {
+                if(window.toastr) window.toastr.error("Choice Stream backend not found! Make sure server.js is in the extension folder and you restarted the SillyTavern console.", "Extension Setup Error", {timeOut: 8000});
+            } else {
+                if(window.toastr) window.toastr.error("DB Fetch Error: " + e.statusText, "Choice Stream");
+            }
             log("API Fetch Error (Is server.js installed?): " + e.responseText, 1);
             return [];
         }
@@ -272,10 +292,14 @@ import {
             await $.ajax({
                 url: '/api/extensions/st_choice_stream/log',
                 type: 'POST',
+                headers: getApiHeaders(),
                 contentType: 'application/json',
                 data: JSON.stringify(payload)
             });
         } catch (e) {
+            if (e.status === 404) {
+                if(window.toastr) window.toastr.error("Cannot save choices! server.js backend is missing. Restart SillyTavern.", "Extension Setup Error");
+            }
             log("API Log Error: " + e.responseText, 1);
         }
     }
@@ -285,11 +309,12 @@ import {
             await $.ajax({
                 url: '/api/extensions/st_choice_stream/delete',
                 type: 'POST',
+                headers: getApiHeaders(),
                 contentType: 'application/json',
                 data: JSON.stringify({ global_id: Number(global_id) })
             });
         } catch (e) {
-            log("API Delete Error: " + e.responseText, 1);
+            if(window.toastr) window.toastr.error("Failed to delete record.", "Choice Stream");
         }
     }
 
@@ -297,16 +322,17 @@ import {
         try {
             await $.ajax({
                 url: '/api/extensions/st_choice_stream/clear',
+                headers: getApiHeaders(),
                 type: 'POST'
             });
         } catch (e) {
-            log("API Clear Error: " + e.responseText, 1);
+            if(window.toastr) window.toastr.error("Failed to wipe database.", "Choice Stream");
         }
     }
 
     async function downloadDatasetJSON() {
         const logs = await apiGetDB();
-        if (logs.length === 0) return alert("No log data available to download.");
+        if (!logs || logs.length === 0) return alert("No log data available to download.");
         
         const blob = new Blob([JSON.stringify(logs, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
