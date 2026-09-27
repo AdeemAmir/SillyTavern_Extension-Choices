@@ -1,8 +1,7 @@
 import {
     eventSource,
     event_types,
-    generateQuietPrompt,
-    getRequestHeaders
+    generateQuietPrompt
 } from '../../../../script.js';
 
 import {
@@ -253,65 +252,56 @@ import {
         return "No AI message found.";
     }
 
-    // --- UNIFIED SERVER.JS API HOOKS WITH NATIVE CSRF PROTECTION ---
-    
-    function getApiHeaders() {
-        let headers = { 'Content-Type': 'application/json' };
-        try {
-            // Merge in SillyTavern's official CSRF token via its native function
-            if (typeof getRequestHeaders === 'function') {
-                Object.assign(headers, getRequestHeaders());
-            }
-        } catch (e) {
-            // Robust fallback to DOM extraction if the import fails
-            const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
-            headers['X-CSRF-Token'] = token;
-        }
-        return headers;
-    }
+    // --- UNIFIED SERVER.JS API HOOKS VIA JQUERY (BYPASSES CSRF ERRORS) ---
     
     async function apiGetDB() {
         try {
-            const res = await fetch('/api/extensions/st_choice_stream/db', {
-                headers: getApiHeaders()
+            return await $.ajax({
+                url: '/api/extensions/st_choice_stream/db',
+                type: 'GET',
+                dataType: 'json'
             });
-            if (!res.ok) throw new Error("Server response not OK");
-            return await res.json();
         } catch (e) {
-            log("API Fetch Error (Is server.js installed?): " + e.message, 1);
+            log("API Fetch Error (Is server.js installed?): " + e.responseText, 1);
             return [];
         }
     }
 
     async function apiLogEvent(payload) {
         try {
-            await fetch('/api/extensions/st_choice_stream/log', {
-                method: 'POST',
-                headers: getApiHeaders(),
-                body: JSON.stringify(payload)
+            await $.ajax({
+                url: '/api/extensions/st_choice_stream/log',
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify(payload)
             });
         } catch (e) {
-            log("API Log Error: " + e.message, 1);
+            log("API Log Error: " + e.responseText, 1);
         }
     }
 
     async function apiDeleteRecord(global_id) {
         try {
-            await fetch('/api/extensions/st_choice_stream/delete', {
-                method: 'POST',
-                headers: getApiHeaders(),
-                body: JSON.stringify({ global_id: Number(global_id) })
+            await $.ajax({
+                url: '/api/extensions/st_choice_stream/delete',
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ global_id: Number(global_id) })
             });
-        } catch (e) {}
+        } catch (e) {
+            log("API Delete Error: " + e.responseText, 1);
+        }
     }
 
     async function apiClearDB() {
         try {
-            await fetch('/api/extensions/st_choice_stream/clear', { 
-                method: 'POST',
-                headers: getApiHeaders() 
+            await $.ajax({
+                url: '/api/extensions/st_choice_stream/clear',
+                type: 'POST'
             });
-        } catch (e) {}
+        } catch (e) {
+            log("API Clear Error: " + e.responseText, 1);
+        }
     }
 
     async function downloadDatasetJSON() {
