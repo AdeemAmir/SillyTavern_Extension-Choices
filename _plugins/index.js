@@ -3,8 +3,7 @@ const path = require('path');
 
 module.exports = {
     info: {
-        // This ID mounts the plugin to /api/plugins/SillyTavern_Extension-Choices/
-        id: 'SillyTavern_Extension-Choices',
+        id: 'sillytavern_extension-choices',
         name: 'Choice Stream Database',
         description: 'Permanent JSONL logging backend for the Choice Stream extension.'
     },
@@ -18,11 +17,15 @@ module.exports = {
                 if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
                 return customPath.trim();
             }
-            // Your requested default DB path
+            // Standard ST Default path
             const defaultDbDir = path.join(process.cwd(), 'data', 'default-user', '_db', 'choices_db');
             if (!fs.existsSync(defaultDbDir)) fs.mkdirSync(defaultDbDir, { recursive: true });
             return path.join(defaultDbDir, 'choices_db.jsonl');
         }
+
+        // Test path initialization on boot
+        const testPath = getDbPath({});
+        console.log(`[ST-Choices] DB Path target: ${testPath}`);
 
         function getRecords(dbPath) {
             if (!fs.existsSync(dbPath)) return [];
@@ -67,6 +70,7 @@ module.exports = {
                 delete data.db_path; 
 
                 fs.appendFileSync(dbPath, JSON.stringify(data) + '\n', 'utf8');
+                console.log(`[ST-Choices] Appended record ${data.id} to ${dbPath}`);
                 res.json({ success: true, id: data.id, global_num, chat_num });
             } catch (e) {
                 console.error("[ST-Choices] DB Write Error:", e);

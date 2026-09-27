@@ -5,60 +5,20 @@ import {
     getRequestHeaders
 } from '../../../../script.js';
 
-import {
-    getContext
-} from '../../../extensions.js';
+import { getContext } from '../../../extensions.js';
+import { DEFAULT_SETTINGS } from './defaults.js';
 
 (function () {
     const MODULE_NAME = "SillyTavern_Extension-Choices";
+    // Exact route to backend
+    const API_BASE = "/api/plugins/sillytavern_extension-choices"; 
+    
     const context = getContext();
     if (!context) return;
 
     let isGenerating = false;
-
-    const MD_JSON_START = ['\x60', '\x60', '\x60', 'json'].join('');
-    const MD_END = ['\x60', '\x60', '\x60'].join('');
-    
     const REGEX_FALLBACK_LIST = /^[-•.*\s\d]+[\.\:\)]?\s+/;
-
-    const defaultPrompts = {
-        instructionPrompt: `[System Note: TASK: Analyze the story context, the summary, and the Chat History above.\n\n{{matrix_block}}\n\nCRITICAL RULES:\n1. Length: Choices MUST be highly detailed, paragraph-length continuations (at least 3 to 5 sentences long).\n2. Content: Include specific immediate actions, rich sensory details, and dialogue. Stay in the immediate present scene. NO time-skips.\n3. JSON Format: Output ONLY a valid JSON array of objects.\n4. Keys: Each object MUST contain EXACTLY ONE key named "choice".\n5. The value of "choice" MUST be the actual narrative paragraph. DO NOT put numbers here. DO NOT add keys for descriptions, reasoning, or titles.\n\nExample format:\n[\n  {"choice": "I slowly back away from the door, my heart hammering against my ribs as the realization sets in. 'We can't stay here,' I whisper, grabbing my coat from the chair. Without waiting for a response, I move to the window, scanning the dark treeline for any sign of movement while frantically trying to piece together a new escape plan."},\n  {"choice": "Another highly detailed narrative paragraph goes here..."}\n]\n\nYou MUST wrap your output in a ${MD_JSON_START} codeblock. Open the codeblock immediately.]`,
-        defaultMatrix: [
-            { range: "1-2", text: "A highly detailed, logical continuation that realistically advances the current immediate scene." },
-            { range: "3-4", text: "A deeply immersive continuation tailored specifically to match the narrative tone." },
-            { range: "5", text: "A wildcard scenario shift introducing a sudden, unexpected action or detailed dialogue that drastically changes the immediate situation." }
-        ]
-    };
-
-    let settings = {
-        enabled: true,
-        includeSummary: true,
-        dynamicMatrix: true,
-        skipInterrupted: true,
-        debugMode: 2,           
-        numOptions: 5,
-        generationDelay: 0,     
-        layout: "column",
-        position: "bottom",
-        offset_top: 10,
-        offset_bottom: 50,
-        
-        storageMode: 'server', 
-        custom_db_path: '',
-        
-        store_ai_context: true,
-        store_summary: true,
-        store_full_prompt: true,
-        store_raw_response: true,
-        
-        widget_width: 90, 
-        choice_block_max_height: 40,
-        modal_width: 95,
-        modal_height: 90,
-
-        instructionPrompt: defaultPrompts.instructionPrompt,
-        matrix: JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix))
-    };
+    let settings = {};
 
     let choiceContainer = null;
     let isInputManuallyEdited = false;
@@ -90,24 +50,13 @@ import {
     }
 
     async function loadSettings() {
+        // Merge defaults
+        settings = Object.assign({}, DEFAULT_SETTINGS);
+        
+        // Override with user settings if they exist
         if (context.extensionSettings[MODULE_NAME]) {
-            settings = Object.assign(settings, context.extensionSettings[MODULE_NAME]);
+            Object.assign(settings, context.extensionSettings[MODULE_NAME]);
         }
-        
-        if (!settings.instructionPrompt) settings.instructionPrompt = defaultPrompts.instructionPrompt;
-        if (!settings.matrix) settings.matrix = JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix));
-        if (settings.storageMode === undefined) settings.storageMode = 'server';
-        if (settings.custom_db_path === undefined) settings.custom_db_path = '';
-        
-        if (settings.widget_width === undefined) settings.widget_width = 90;
-        if (settings.choice_block_max_height === undefined) settings.choice_block_max_height = 40;
-        if (settings.modal_width === undefined) settings.modal_width = 95;
-        if (settings.modal_height === undefined) settings.modal_height = 90;
-        
-        if (settings.store_ai_context === undefined) settings.store_ai_context = true;
-        if (settings.store_summary === undefined) settings.store_summary = true;
-        if (settings.store_full_prompt === undefined) settings.store_full_prompt = true;
-        if (settings.store_raw_response === undefined) settings.store_raw_response = true;
         
         applyDynamicCSSVars();
     }
@@ -258,10 +207,15 @@ import {
 
     function generateUniqueId() {
         const d = new Date();
-        const pad = (n, m=2) => String(n).padStart(m, '0');
-        const prefix = `${String(d.getFullYear()).slice(2)}${pad(d.getMonth()+1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}${pad(d.getMilliseconds(), 3)}`;
-        const hash = Math.random().toString(36).substring(2, 8);
-        return `${prefix}_${hash}`;
+        const yy = String(d.getFullYear()).slice(-2);
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mn = String(d.getMinutes()).padStart(2, '0');
+        const ss = String(d.getSeconds()).padStart(2, '0');
+        const ms = String(d.getMilliseconds()).padStart(3, '0');
+        const hash = Math.random().toString(36).substring(2, 8).padEnd(6, '0');
+        return `${yy}${mm}${dd}${hh}${mn}${ss}${ms}_${hash}`;
     }
 
     function extractAIResponseContext() {
@@ -291,8 +245,12 @@ import {
             if (settings.storageMode === 'server') {
                 try {
                     payload.db_path = settings.custom_db_path || "";
-                    await $.ajax({ url: `/api/plugins/${MODULE_NAME}/log`, type: 'POST', headers: getApiHeaders(), contentType: 'application/json', data: JSON.stringify(payload) });
-                } catch (e) { log("API Log Error: " + e.responseText, 1); }
+                    const res = await $.ajax({ url: `${API_BASE}/log`, type: 'POST', headers: getApiHeaders(), contentType: 'application/json', data: JSON.stringify(payload) });
+                    if(window.toastr) window.toastr.success(`Saved to Server DB successfully.`, "Choices");
+                } catch (e) { 
+                    log("API Log Error: " + e.responseText, 1); 
+                    if(window.toastr) window.toastr.error(`Server DB Error! Check console. Fallback to LocalDB recommended.`, "Backend Failure");
+                }
             } else {
                 if(!localDB) return;
                 const tx = localDB.transaction("logs", "readwrite");
@@ -304,15 +262,16 @@ import {
                 payload.chat_num = chatRecords.length > 0 ? chatRecords[chatRecords.length - 1].chat_num + 1 : 1;
                 
                 store.add(payload);
+                if(window.toastr) window.toastr.success(`Saved to LocalDB successfully.`, "Choices");
             }
         },
         async getAll() {
             if (settings.storageMode === 'server') {
                 try {
                     const encodedPath = encodeURIComponent(settings.custom_db_path || "");
-                    return await $.ajax({ url: `/api/plugins/${MODULE_NAME}/db?db_path=${encodedPath}`, type: 'GET', headers: getApiHeaders(), dataType: 'json' });
+                    return await $.ajax({ url: `${API_BASE}/db?db_path=${encodedPath}`, type: 'GET', headers: getApiHeaders(), dataType: 'json' });
                 } catch (e) {
-                    if (e.status === 404 && window.toastr) window.toastr.error("Choice Stream backend not found! Please run the installer script.", "Backend Error");
+                    if (e.status === 404 && window.toastr) window.toastr.error("Choice Stream backend not found! Please run the Python installer script.", "Backend Error");
                     return [];
                 }
             } else {
@@ -326,7 +285,7 @@ import {
         },
         async delete(id) {
             if (settings.storageMode === 'server') {
-                try { await $.ajax({ url: `/api/plugins/${MODULE_NAME}/delete`, type: 'POST', headers: getApiHeaders(), contentType: 'application/json', data: JSON.stringify({ id: id, db_path: settings.custom_db_path || "" }) }); } catch (e) {}
+                try { await $.ajax({ url: `${API_BASE}/delete`, type: 'POST', headers: getApiHeaders(), contentType: 'application/json', data: JSON.stringify({ id: id, db_path: settings.custom_db_path || "" }) }); } catch (e) {}
             } else {
                 if(!localDB) return;
                 localDB.transaction("logs", "readwrite").objectStore("logs").delete(id);
@@ -334,7 +293,7 @@ import {
         },
         async clear(type) {
             if (settings.storageMode === 'server') {
-                try { await $.ajax({ url: `/api/plugins/${MODULE_NAME}/clear`, type: 'POST', headers: getApiHeaders(), contentType: 'application/json', data: JSON.stringify({ type: type, db_path: settings.custom_db_path || "" }) }); } catch (e) {}
+                try { await $.ajax({ url: `${API_BASE}/clear`, type: 'POST', headers: getApiHeaders(), contentType: 'application/json', data: JSON.stringify({ type: type, db_path: settings.custom_db_path || "" }) }); } catch (e) {}
             } else {
                 if(!localDB) return;
                 if (type === "ALL") localDB.transaction("logs", "readwrite").objectStore("logs").clear();
@@ -348,7 +307,7 @@ import {
         },
         async importData(records) {
             if (settings.storageMode === 'server') {
-                try { await $.ajax({ url: `/api/plugins/${MODULE_NAME}/import`, type: 'POST', headers: getApiHeaders(), contentType: 'application/json', data: JSON.stringify({ records: records, db_path: settings.custom_db_path || "" }) }); } catch (e) {}
+                try { await $.ajax({ url: `${API_BASE}/import`, type: 'POST', headers: getApiHeaders(), contentType: 'application/json', data: JSON.stringify({ records: records, db_path: settings.custom_db_path || "" }) }); } catch (e) {}
             } else {
                 if(!localDB) return;
                 let all = await this.getAll();
@@ -455,13 +414,13 @@ import {
             const kw = searchKeyword.toLowerCase();
             filtered = filtered.filter(c => 
                 (c.character_or_group_name && c.character_or_group_name.toLowerCase().includes(kw)) || 
-                (c.choices && c.choices.some(choice => choice.toLowerCase().includes(kw))) ||
+                (c.data && Array.isArray(c.data) && c.data.some(choice => choice.toLowerCase().includes(kw))) ||
                 (c.custom_direction && c.custom_direction.toLowerCase().includes(kw)) ||
                 (c.ai_context && c.ai_context.toLowerCase().includes(kw))
             );
         }
 
-        let chatOptionsHtml = `<option value="__ALL__" ${filterChat === '__ALL__' ? 'selected' : ''}>All Chats (${allClusters.length} total saves)</option>`;
+        let chatOptionsHtml = `<option value="__ALL__" ${filterChat === '__ALL__' ? 'selected' : ''}>All Chats (${allClusters.length} saves)</option>`;
         const chatKeysArr = Object.keys(chatKeysMap).sort((a,b) => a === chat_name ? -1 : (b === chat_name ? 1 : chatKeysMap[a].localeCompare(chatKeysMap[b])));
         
         chatKeysArr.forEach(cId => {
@@ -476,8 +435,9 @@ import {
             bodyHtml = `<div style="text-align:center; padding: 40px 10px; color: rgba(255,255,255,0.4);">No saved choice history matches the criteria.</div>`;
         } else {
             filtered.forEach(cluster => {
-                const totalWords = cluster.choices ? cluster.choices.reduce((acc, c) => acc + (c.trim() ? c.trim().split(/\s+/).length : 0), 0) : 0;
-                const totalChars = cluster.choices ? cluster.choices.reduce((acc, c) => acc + c.length, 0) : 0;
+                const choicesArray = Array.isArray(cluster.data) ? cluster.data : (cluster.choices || []);
+                const totalWords = choicesArray.reduce((acc, c) => acc + (c.trim() ? c.trim().split(/\s+/).length : 0), 0);
+                const totalChars = choicesArray.reduce((acc, c) => acc + c.length, 0);
                 const estTokens = Math.round(totalWords * 1.3);
                 
                 // Format ID for display
@@ -496,10 +456,10 @@ import {
                                     <span class="cs-stat-pill" title="Global DB Num">G# ${cluster.global_num}</span>
                                     <span class="cs-stat-pill" title="Chat-Specific Generation ID">C# ${cluster.chat_num}</span>
                                     <span class="cs-stat-pill" title="Timestamp ID"><i class="fa-solid fa-clock"></i> ${displayId}</span>
-                                    <span class="cs-stat-pill" style="color:#38bdf8;"><i class="fa-solid fa-list-ol"></i> ${(cluster.choices||[]).length} options</span>
+                                    <span class="cs-stat-pill" style="color:#38bdf8;"><i class="fa-solid fa-list-ol"></i> ${choicesArray.length} options</span>
                                     <span class="cs-stat-pill"><i class="fa-solid fa-font"></i> ${totalWords}w / ${totalChars}c</span>
                                 </div>
-                                ${cluster.custom_direction ? `<div style="font-size:0.8rem; color:#f472b6;"><b>Prompt:</b> "${cluster.custom_direction}"</div>` : ''}
+                                ${cluster.custom_direction ? `<div style="font-size:0.8rem; color:#f472b6;"><b>Direction:</b> "${cluster.custom_direction}"</div>` : ''}
                             </div>
                             <div style="display:flex; gap:8px;">
                                 <button class="menu_button cs-touch-btn cs-load-cluster-btn margin0" style="padding:4px 8px; font-size:0.8rem; color:#10b981;" title="Load into choices UI"><i class="fa-solid fa-arrow-up-right-from-square"></i> Use</button>
@@ -513,7 +473,7 @@ import {
                         </div>` : ''}
 
                         <div class="cs-cluster-preview" style="font-size:0.88rem; opacity:0.85; cursor:pointer;">
-                            ${(cluster.choices||[]).map((c, i) => `<div><span style="color:#8b5cf6;">[${i+1}]</span> ${c.substring(0, 110)}...</div>`).join('')}
+                            ${choicesArray.map((c, i) => `<div><span style="color:#8b5cf6;">[${i+1}]</span> ${c.substring(0, 110)}...</div>`).join('')}
                         </div>
 
                         <div class="cs-toggle-inspect" style="font-size:0.8rem; color:#8b5cf6; cursor:pointer; text-decoration:underline;">
@@ -527,7 +487,13 @@ import {
                                 <div style="margin-top:4px; max-height:80px; overflow-y:auto; opacity:0.85;">${cluster.ai_context.replace(/</g, '&lt;')}</div>
                             </div>` : ''}
                             
-                            ${(cluster.choices||[]).map((c, i) => {
+                            ${cluster.instruction_prompt ? `
+                            <div style="font-size:0.8rem; background:rgba(0,0,0,0.3); padding:8px; border-radius:4px; border-left:3px solid #f59e0b;">
+                                <b style="color:#fbbf24;">Master Instruction Prompt Used:</b>
+                                <div style="margin-top:4px; max-height:80px; overflow-y:auto; opacity:0.85; white-space:pre-wrap;">${cluster.instruction_prompt.replace(/</g, '&lt;')}</div>
+                            </div>` : ''}
+
+                            ${choicesArray.map((c, i) => {
                                 const w = c.trim().split(/\s+/).length;
                                 return `
                                     <div class="cs-single-option">
@@ -604,7 +570,8 @@ import {
             btn.onclick = () => {
                 const id = btn.closest('.cs-history-cluster').getAttribute('data-id');
                 const cluster = filtered.find(c => c.id === id);
-                if (cluster && cluster.choices) renderChoices(cluster.choices);
+                if (cluster && cluster.data) renderChoices(cluster.data);
+                else if (cluster && cluster.choices) renderChoices(cluster.choices);
                 closeModal();
             };
         });
@@ -672,7 +639,8 @@ import {
             bodyHtml = `<div style="text-align:center; padding: 40px 10px; color: rgba(255,255,255,0.4);">No unparsed LLM responses recorded. Everything is parsing smoothly!</div>`;
         } else {
             fails.forEach(fail => {
-                const wordCount = (fail.raw_response || "").trim().split(/\s+/).length;
+                const rawString = typeof fail.data === 'string' ? fail.data : (fail.raw_response || "");
+                const wordCount = rawString.trim().split(/\s+/).length;
                 const rawId = fail.id || "Unknown";
                 const displayId = rawId.includes('_') ? rawId.split('_')[0] : rawId;
 
@@ -684,11 +652,11 @@ import {
                                 <div style="display:flex; gap:6px; margin-top:3px; flex-wrap:wrap;">
                                     <span class="cs-stat-pill" title="Global DB Num">G# ${fail.global_num}</span>
                                     <span class="cs-stat-pill" title="Timestamp ID"><i class="fa-solid fa-clock"></i> ${displayId}</span>
-                                    <span class="cs-stat-pill">${wordCount} words / ${(fail.raw_response || "").length} chars</span>
+                                    <span class="cs-stat-pill">${wordCount} words / ${rawString.length} chars</span>
                                 </div>
                             </div>
                             <div style="display:flex; gap:8px;">
-                                <button class="menu_button cs-touch-btn cs-fail-copy-btn margin0" data-text="${encodeURIComponent(fail.raw_response || '')}"><i class="fa-solid fa-copy"></i> Copy Raw</button>
+                                <button class="menu_button cs-touch-btn cs-fail-copy-btn margin0" data-text="${encodeURIComponent(rawString)}"><i class="fa-solid fa-copy"></i> Copy Raw</button>
                                 <button class="menu_button cs-touch-btn cs-fail-del-btn margin0" data-id="${fail.id}" style="color:#ef4444;"><i class="fa-solid fa-trash"></i></button>
                             </div>
                         </div>
@@ -698,7 +666,7 @@ import {
                             <b>Failed context snippet:</b> "${fail.ai_context.substring(0, 150)}${fail.ai_context.length > 150 ? '...' : ''}"
                         </div>` : ''}
 
-                        <div class="cs-failed-item">${(fail.raw_response || "").replace(/</g, '&lt;')}</div>
+                        <div class="cs-failed-item">${rawString.replace(/</g, '&lt;')}</div>
                     </div>
                 `;
             });
@@ -962,9 +930,12 @@ import {
         if (!sum && context.chatMetadata?.summary) sum = context.chatMetadata.summary;
         if (!sum && context.chat) {
             for (let i = context.chat.length - 1; i >= 0; i--) {
-                if (context.chat[i].is_system && context.chat[i].mes && (context.chat[i].mes.includes("Summary:") || context.chat[i].mes.includes("<memory>"))) {
-                    sum = context.chat[i].mes.trim();
-                    break;
+                if (context.chat[i].is_system && context.chat[i].mes) {
+                    const mes = context.chat[i].mes;
+                    if (mes.includes("Summary:") || mes.includes("<memory>") || mes.includes("Previous context:")) {
+                        sum = mes.trim();
+                        break;
+                    }
                 }
             }
         }
@@ -1005,11 +976,12 @@ import {
         let rawResponse = "";
         let choices = [];
         let isSuccess = false;
+        let stInstruction = "";
         
         try {
-            log(`Fetching ${settings.numOptions} choices from Native backend...`, 1);
+            log(`Fetching ${settings.numOptions} choices from backend...`, 1);
 
-            let stInstruction = settings.instructionPrompt
+            stInstruction = settings.instructionPrompt
                 .replaceAll("{{numOptions}}", settings.numOptions)
                 .replaceAll("{{matrix_block}}", dynamicMatrix);
 
@@ -1023,7 +995,6 @@ import {
                 }
             }
 
-            // generateQuietPrompt automatically injects chat history, we only append instruction
             compiledPrompt = storySummary ? `${storySummary}\n\n${stInstruction}` : stInstruction;
             
             rawResponse = await executeWithRetry(() => fetchRaw(compiledPrompt), 1, 3000);
@@ -1052,9 +1023,8 @@ import {
                     ai_context: settings.store_ai_context ? extractAIResponseContext() : "",
                     story_summary: settings.store_summary ? storySummary : "",
                     custom_direction: customDirection.trim(),
-                    full_prompt: settings.store_full_prompt ? compiledPrompt : "",
-                    raw_response: settings.store_raw_response ? rawResponse : "",
-                    choices: isSuccess ? choices : []
+                    instruction_prompt: settings.store_instruction_prompt ? stInstruction : "",
+                    data: isSuccess ? choices : (settings.store_raw_response ? rawResponse : "")
                 };
 
                 DB.log(payload);
@@ -1322,14 +1292,15 @@ import {
                             </select>
                         </div>
                         <div class="flex-container alignitemscenter marginBot5">
-                            <label style="flex:1;" title="Leave empty to use ST default user data path">Custom DB Path (Absolute):</label>
-                            <input type="text" id="cs_custom_db_path" class="text_pole" style="flex:1;" placeholder="e.g. D:\\MySTData\\choices_db.jsonl" value="${settings.custom_db_path}">
+                            <label style="flex:1;" title="Leave empty to use ST default path">Custom DB Path (Absolute):</label>
+                            <input type="text" id="cs_custom_db_path" class="text_pole" style="flex:1;" placeholder="Leave empty for default" value="${settings.custom_db_path}">
                         </div>
 
                         <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; margin-top: 8px;">
                             <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_ai_context" ${settings.store_ai_context ? "checked" : ""}><span>Log AI Context</span></label>
                             <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_summary" ${settings.store_summary ? "checked" : ""}><span>Log Summary</span></label>
-                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_full_prompt" ${settings.store_full_prompt ? "checked" : ""}><span>Log Full Prompt</span></label>
+                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_instruction_prompt" ${settings.store_instruction_prompt ? "checked" : ""}><span>Log Instructions</span></label>
+                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_custom_direction" ${settings.store_custom_direction ? "checked" : ""}><span>Log Direction</span></label>
                             <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_raw_response" ${settings.store_raw_response ? "checked" : ""}><span>Log Raw Response</span></label>
                         </div>
                         
@@ -1445,7 +1416,7 @@ import {
             icon.toggleClass('fa-circle-chevron-down fa-circle-chevron-up');
         });
 
-        const chkMap = ['cs_active', 'cs_skip_interrupt', 'cs_include_summary', 'cs_dynamic_matrix', 'cs_store_ai_context', 'cs_store_summary', 'cs_store_full_prompt', 'cs_store_raw_response'];
+        const chkMap = ['cs_active', 'cs_skip_interrupt', 'cs_include_summary', 'cs_dynamic_matrix', 'cs_store_ai_context', 'cs_store_summary', 'cs_store_instruction_prompt', 'cs_store_custom_direction', 'cs_store_raw_response'];
         chkMap.forEach(id => {
             $(`#${id}`).on("change", function() { 
                 const key = id.replace("cs_", "");
@@ -1527,7 +1498,6 @@ import {
                     const lines = event.target.result.split('\n');
                     let added = 0;
                     lines.forEach(line => {
-                        // Safely capture ranges (1-2, 3), delimiters (: | -), and string remainder, bypassing interior commas
                         let match = line.match(/^([\d\s\-,]+)[\s:|-]+(.+)$/);
                         if (match) {
                             settings.matrix.push({ range: match[1].trim(), text: match[2].trim() });

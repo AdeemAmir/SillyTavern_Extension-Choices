@@ -21,28 +21,17 @@ if /I not "%CHOICE%"=="y" (
     exit /b 0
 )
 
-rem -------------------------------------------------
-rem Calculate paths
-rem Script location:
-rem public/default-user/extensions/SillyTavern_Extension-Choices/
-rem ST root is 4 directories above this script
-rem -------------------------------------------------
-
+rem Calculate paths (ST root is 4 directories above this script)
 set "CURRENT_DIR=%~dp0"
 for %%A in ("%CURRENT_DIR%\..\..\..\..") do set "ST_ROOT=%%~fA"
 
 set "CONFIG_PATH=%ST_ROOT%\config.yaml"
-set "PLUGIN_DEST_DIR=%ST_ROOT%\plugins\SillyTavern_Extension-Choices"
+set "PLUGIN_DEST_DIR=%ST_ROOT%\plugins\sillytavern_extension-choices"
 set "PLUGIN_DEST_FILE=%PLUGIN_DEST_DIR%\index.js"
 set "PLUGIN_SRC_FILE=%CURRENT_DIR%_plugins\index.js"
 
-rem -------------------------------------------------
-rem 1. Modify config.yaml
-rem -------------------------------------------------
-
 if not exist "%CONFIG_PATH%" (
-    echo [ERROR] Could not find config.yaml at:
-    echo %CONFIG_PATH%
+    echo [ERROR] Could not find config.yaml at: %CONFIG_PATH%
     echo Are you running this in the right folder?
     exit /b 1
 )
@@ -57,23 +46,15 @@ if errorlevel 1 (
     echo [ERROR] Failed to modify config.yaml.
     exit /b 1
 )
-
 echo [OK] config.yaml updated (enableServerPlugins: true).
 
-rem -------------------------------------------------
-rem 2. Copy Plugin Backend
-rem -------------------------------------------------
-
 if not exist "%PLUGIN_SRC_FILE%" (
-    echo [ERROR] Source backend file not found at:
-    echo %PLUGIN_SRC_FILE%
+    echo [ERROR] Source backend file not found at: %PLUGIN_SRC_FILE%
     echo Create the _plugins\index.js file first.
     exit /b 1
 )
 
-if not exist "%PLUGIN_DEST_DIR%" (
-    mkdir "%PLUGIN_DEST_DIR%"
-)
+if not exist "%PLUGIN_DEST_DIR%" ( mkdir "%PLUGIN_DEST_DIR%" )
 
 copy /Y "%PLUGIN_SRC_FILE%" "%PLUGIN_DEST_FILE%" >nul
 
@@ -81,15 +62,9 @@ if errorlevel 1 (
     echo [ERROR] Failed to copy backend router.
     exit /b 1
 )
-
-echo [OK] Backend router installed to:
-echo %PLUGIN_DEST_FILE%
-
+echo [OK] Backend router installed to: %PLUGIN_DEST_FILE%
 echo.
-echo SUCCESS!
-echo You must completely restart the SillyTavern command console/Start.bat
-echo for the backend to load.
+echo SUCCESS! You must completely restart the SillyTavern command console/Start.bat for the backend to load.
 echo.
-
 pause
 endlocal
