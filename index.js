@@ -238,13 +238,7 @@ import {
     }
 
     function getCurrentChatName() {
-        let name = "Unknown Chat";
-        if (context.characters && context.characters.length > 0 && context.characterId !== undefined) {
-            name = context.characters[context.characterId]?.name || context.name2;
-        } else if (context.name2) {
-            name = context.name2;
-        }
-        return name || "Group/Unknown Chat";
+        return context.name2 || "Unknown Character";
     }
 
     function extractAIResponseContext() {
@@ -915,7 +909,7 @@ import {
 
             let stInstruction = settings.instructionPrompt
                 .replaceAll("{{numOptions}}", settings.numOptions)
-                .replaceAll("{{style_block}}", userStyleText)
+                .replaceAll("{{style_block}}", userStyle) // <--- FIX 1
                 .replaceAll("{{matrix_block}}", dynamicMatrix)
                 .replaceAll("{{user}}", safeUserName);
 
@@ -955,7 +949,7 @@ import {
                 status: isSuccess ? "SUCCESS" : "FAIL",
                 ai_context: settings.store_ai_context ? extractAIResponseContext() : "",
                 story_summary: settings.store_summary ? storySummary : "",
-                user_style: settings.store_user_style ? userStyleText : "",
+                user_style: settings.store_user_style ? userStyle : "", // <--- FIX 2
                 custom_direction: customDirection.trim(),
                 full_prompt: settings.store_full_prompt ? compiledPrompt : "",
                 raw_response: settings.store_raw_response ? rawResponse : "",
