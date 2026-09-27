@@ -252,11 +252,22 @@ import {
         return "No AI message found.";
     }
 
-    // --- UNIFIED SERVER.JS API HOOKS ---
+    // --- UNIFIED SERVER.JS API HOOKS WITH CSRF PROTECTION ---
+    
+    function getApiHeaders() {
+        // SillyTavern requires CSRF tokens for all backend API modifications
+        const token = window.csrf_token || '';
+        return {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': token
+        };
+    }
     
     async function apiGetDB() {
         try {
-            const res = await fetch('/api/extensions/st_choice_stream/db');
+            const res = await fetch('/api/extensions/st_choice_stream/db', {
+                headers: getApiHeaders()
+            });
             if (!res.ok) throw new Error("Server response not OK");
             return await res.json();
         } catch (e) {
@@ -269,7 +280,7 @@ import {
         try {
             await fetch('/api/extensions/st_choice_stream/log', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: getApiHeaders(),
                 body: JSON.stringify(payload)
             });
         } catch (e) {
@@ -281,7 +292,7 @@ import {
         try {
             await fetch('/api/extensions/st_choice_stream/delete', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: getApiHeaders(),
                 body: JSON.stringify({ global_id: Number(global_id) })
             });
         } catch (e) {}
@@ -289,7 +300,10 @@ import {
 
     async function apiClearDB() {
         try {
-            await fetch('/api/extensions/st_choice_stream/clear', { method: 'POST' });
+            await fetch('/api/extensions/st_choice_stream/clear', { 
+                method: 'POST',
+                headers: getApiHeaders() 
+            });
         } catch (e) {}
     }
 
@@ -909,7 +923,7 @@ import {
 
             let stInstruction = settings.instructionPrompt
                 .replaceAll("{{numOptions}}", settings.numOptions)
-                .replaceAll("{{style_block}}", userStyle) // <--- FIX 1
+                .replaceAll("{{style_block}}", userStyle)
                 .replaceAll("{{matrix_block}}", dynamicMatrix)
                 .replaceAll("{{user}}", safeUserName);
 
@@ -940,7 +954,6 @@ import {
             isGenerating = false;
             if (goBtnIcon) goBtnIcon.className = "fa-solid fa-play";
             
-            // Generate DB Payload unified for both Pass and Fail
             const payload = {
                 datetime: new Date().toLocaleString(),
                 timestamp: Date.now(),
@@ -949,7 +962,7 @@ import {
                 status: isSuccess ? "SUCCESS" : "FAIL",
                 ai_context: settings.store_ai_context ? extractAIResponseContext() : "",
                 story_summary: settings.store_summary ? storySummary : "",
-                user_style: settings.store_user_style ? userStyle : "", // <--- FIX 2
+                user_style: settings.store_user_style ? userStyle : "",
                 custom_direction: customDirection.trim(),
                 full_prompt: settings.store_full_prompt ? compiledPrompt : "",
                 raw_response: settings.store_raw_response ? rawResponse : "",
