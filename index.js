@@ -10,7 +10,7 @@ import {
 } from '../../../extensions.js';
 
 (function () {
-    const MODULE_NAME = "st_choice_stream";
+    const MODULE_NAME = "SillyTavern_Extension-Choices";
     const context = getContext();
     if (!context) return;
 
@@ -271,7 +271,7 @@ import {
     async function apiGetDB() {
         try {
             return await $.ajax({
-                url: '/api/extensions/st_choice_stream/db',
+                url: '/api/extensions/SillyTavern_Extension-Choices/db',
                 type: 'GET',
                 headers: getApiHeaders(),
                 dataType: 'json'
@@ -290,7 +290,7 @@ import {
     async function apiLogEvent(payload) {
         try {
             await $.ajax({
-                url: '/api/extensions/st_choice_stream/log',
+                url: '/api/extensions/SillyTavern_Extension-Choices/log',
                 type: 'POST',
                 headers: getApiHeaders(),
                 contentType: 'application/json',
@@ -307,7 +307,7 @@ import {
     async function apiDeleteRecord(global_id) {
         try {
             await $.ajax({
-                url: '/api/extensions/st_choice_stream/delete',
+                url: '/api/extensions/SillyTavern_Extension-Choices/delete',
                 type: 'POST',
                 headers: getApiHeaders(),
                 contentType: 'application/json',
@@ -321,7 +321,7 @@ import {
     async function apiClearDB() {
         try {
             await $.ajax({
-                url: '/api/extensions/st_choice_stream/clear',
+                url: '/api/extensions/SillyTavern_Extension-Choices/clear',
                 headers: getApiHeaders(),
                 type: 'POST'
             });

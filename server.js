@@ -37,7 +37,7 @@ module.exports = {
         }
 
         // Endpoint: Append a new record (Pass or Fail)
-        app.post('/api/extensions/st_choice_stream/log', (req, res) => {
+        app.post('/api/extensions/SillyTavern_Extension-Choices/log', (req, res) => {
             try {
                 const data = req.body;
                 if (!data) return res.status(400).json({ error: "Missing payload" });
@@ -62,7 +62,7 @@ module.exports = {
         });
 
         // Endpoint: Fetch the entire dataset
-        app.get('/api/extensions/st_choice_stream/db', (req, res) => {
+        app.get('/api/extensions/SillyTavern_Extension-Choices/db', (req, res) => {
             try {
                 res.json(getRecords());
             } catch (e) {
@@ -71,7 +71,7 @@ module.exports = {
         });
 
         // Endpoint: Delete a single record by Global ID
-        app.post('/api/extensions/st_choice_stream/delete', (req, res) => {
+        app.post('/api/extensions/SillyTavern_Extension-Choices/delete', (req, res) => {
             try {
                 const targetId = req.body.global_id;
                 let records = getRecords();
@@ -84,7 +84,7 @@ module.exports = {
         });
 
         // Endpoint: Wipe database completely
-        app.post('/api/extensions/st_choice_stream/clear', (req, res) => {
+        app.post('/api/extensions/SillyTavern_Extension-Choices/clear', (req, res) => {
             try {
                 atomicWrite([]);
                 res.json({ success: true });
