@@ -50,10 +50,7 @@ import {
         widget_width: 90, 
         userStyleTemplate: defaultPrompts.userStyleTemplate,
         instructionPrompt: defaultPrompts.instructionPrompt,
-        matrix: JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix)),
-        choiceHistory: {},
-        failedParses: [],
-        foreverLogText: ""
+        matrix: JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix))
     };
 
     let choiceContainer = null;
@@ -62,6 +59,54 @@ import {
     let wasInterrupted = false;
     let DOM_textarea = null; 
     let formObserver = null;
+    
+    // --- DATABASE INTEGRATION (IndexedDB for limitless storage) ---
+    const dbName = "ST_ChoiceStream_DB";
+    let db = null;
+
+    function initDB() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(dbName, 1);
+            request.onupgradeneeded = (e) => {
+                let tempDb = e.target.result;
+                if (!tempDb.objectStoreNames.contains("history")) {
+                    tempDb.createObjectStore("history", { keyPath: "id", autoIncrement: true });
+                }
+                if (!tempDb.objectStoreNames.contains("fails")) {
+                    tempDb.createObjectStore("fails", { keyPath: "id", autoIncrement: true });
+                }
+            };
+            request.onsuccess = (e) => { db = e.target.result; resolve(); };
+            request.onerror = (e) => { log("IndexedDB Error: " + e.target.error, 1); reject(); };
+        });
+    }
+
+    function dbAdd(storeName, data) {
+        if (!db) return;
+        const tx = db.transaction(storeName, "readwrite");
+        tx.objectStore(storeName).add(data);
+    }
+
+    function dbGetAll(storeName) {
+        return new Promise((resolve) => {
+            if (!db) return resolve([]);
+            const tx = db.transaction(storeName, "readonly");
+            const req = tx.objectStore(storeName).getAll();
+            req.onsuccess = () => resolve(req.result || []);
+        });
+    }
+
+    function dbDelete(storeName, id) {
+        if (!db) return;
+        const tx = db.transaction(storeName, "readwrite");
+        tx.objectStore(storeName).delete(id);
+    }
+
+    function dbClear(storeName) {
+        if (!db) return;
+        const tx = db.transaction(storeName, "readwrite");
+        tx.objectStore(storeName).clear();
+    }
 
     function log(text, level = 1) {
         if (settings.debugMode >= level) {
@@ -69,19 +114,37 @@ import {
         }
     }
 
-    function loadSettings() {
+    async function loadSettings() {
         if (context.extensionSettings[MODULE_NAME]) {
             settings = Object.assign(settings, context.extensionSettings[MODULE_NAME]);
-            if (!settings.instructionPrompt) settings.instructionPrompt = defaultPrompts.instructionPrompt;
-            if (!settings.userStyleTemplate) settings.userStyleTemplate = defaultPrompts.userStyleTemplate;
-            if (!settings.matrix) settings.matrix = JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix));
-            if (!settings.widget_left) settings.widget_left = '40%';
-            if (!settings.widget_top && !settings.widget_bottom) settings.widget_top = '40%';
-            if (settings.widget_width === undefined) settings.widget_width = 90;
-            if (!settings.choiceHistory) settings.choiceHistory = {};
-            if (!settings.failedParses) settings.failedParses = [];
-            if (!settings.foreverLogText) settings.foreverLogText = "";
+            
+            // Legacy Migration to IndexedDB (prevent settings.json bloat)
+            if (settings.choiceHistory || settings.failedParses || settings.foreverLogText) {
+                log("Migrating old JSON storage to IndexedDB...", 1);
+                
+                if (settings.choiceHistory) {
+                    for (const chat in settings.choiceHistory) {
+                        settings.choiceHistory[chat].forEach(c => dbAdd("history", { chatName: chat, ...c }));
+                    }
+                }
+                if (settings.failedParses) {
+                    settings.failedParses.forEach(f => dbAdd("fails", f));
+                }
+
+                delete settings.choiceHistory;
+                delete settings.failedParses;
+                delete settings.foreverLogText;
+                save();
+            }
         }
+        
+        if (!settings.instructionPrompt) settings.instructionPrompt = defaultPrompts.instructionPrompt;
+        if (!settings.userStyleTemplate) settings.userStyleTemplate = defaultPrompts.userStyleTemplate;
+        if (!settings.matrix) settings.matrix = JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix));
+        if (!settings.widget_left) settings.widget_left = '40%';
+        if (!settings.widget_top && !settings.widget_bottom) settings.widget_top = '40%';
+        if (settings.widget_width === undefined) settings.widget_width = 90;
+        
         document.documentElement.style.setProperty('--cs-panel-width', `${settings.widget_width}vw`);
     }
 
@@ -142,7 +205,8 @@ import {
 
     async function init() {
         log("Booting Concurrency-Locked Matrix Engine...", 1);
-        loadSettings();
+        await initDB();
+        await loadSettings();
         injectCSS();
         
         setTimeout(() => {
@@ -200,7 +264,7 @@ import {
         });
     }
 
-    // --- LOGGING & HISTORY MANAGEMENT ---
+    // --- LOGGING & DATASET PREPARATION ---
 
     function extractAIResponseContext() {
         const chat = context.chat;
@@ -213,42 +277,37 @@ import {
         return "No AI message found.";
     }
 
-    function saveToHistory(choices, customDirection = "") {
+    function saveToHistory(choices, customDirection, storySummary, userStyleText) {
         const chatName = context.chatId || context.name2 || "Unknown_Chat";
         const aiResponse = extractAIResponseContext();
-        const timestamp = Date.now();
         
-        if (!settings.choiceHistory[chatName]) settings.choiceHistory[chatName] = [];
+        const dataPayload = {
+            timestamp: Date.now(),
+            chatName,
+            aiContext: aiResponse,
+            summary: storySummary || "",
+            userStyle: userStyleText || "",
+            direction: (customDirection || "").trim(),
+            choices: choices
+        };
         
-        const entry = { timestamp, aiResponse, choices, direction: customDirection.trim() };
-        settings.choiceHistory[chatName].unshift(entry);
-        
-        if (!settings.foreverLogText) settings.foreverLogText = "";
-        let logEntry = `\n=================================\n`;
-        logEntry += `DATE: ${new Date(timestamp).toLocaleString()}\n`;
-        logEntry += `CHAT: ${chatName}\n`;
-        if (customDirection.trim()) logEntry += `CUSTOM DIRECTION: "${customDirection.trim()}"\n`;
-        logEntry += `AI CONTEXT:\n${aiResponse.substring(0, 300)}${aiResponse.length > 300 ? '...\n' : '\n'}`;
-        logEntry += `GENERATED CHOICES (${choices.length}):\n`;
-        choices.forEach((c, i) => { logEntry += `  [${i+1}] ${c}\n`; });
-        logEntry += `=================================\n`;
-        settings.foreverLogText += logEntry;
-        
-        save();
+        dbAdd("history", dataPayload);
     }
 
     function saveFailedParse(rawText) {
         const chatName = context.chatId || context.name2 || "Unknown_Chat";
-        settings.failedParses.unshift({ timestamp: Date.now(), chatName, rawText });
-        save();
+        dbAdd("fails", { timestamp: Date.now(), chatName, rawText });
     }
 
-    function downloadForeverLog() {
-        const logContent = settings.foreverLogText || "No forever logs recorded yet.";
-        const blob = new Blob([logContent], { type: 'text/plain' });
+    async function downloadDatasetJSON() {
+        const logs = await dbGetAll("history");
+        if (logs.length === 0) return alert("No log data available to download.");
+        
+        // Formats the DB array beautifully for easy external AI data-processing
+        const blob = new Blob([JSON.stringify(logs, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.download = `st_choice_stream_forever_log_${Date.now()}.txt`;
+        a.download = `st_choices_dataset_${Date.now()}.json`;
         a.href = url;
         a.click();
         URL.revokeObjectURL(url);
@@ -273,7 +332,7 @@ import {
 
     // --- MODALS (Choice History & Failed Parses) ---
 
-    function showHistoryModal(filterChat = "__ALL__", searchKeyword = "") {
+    async function showHistoryModal(filterChat = "__ALL__", searchKeyword = "") {
         if (document.getElementById('cs_history_modal')) document.getElementById('cs_history_modal').remove();
         
         const modalOverlay = document.createElement('div');
@@ -281,17 +340,11 @@ import {
         modalOverlay.className = 'cs-modal-overlay';
         
         const currentChat = context.chatId || context.name2 || "Unknown_Chat";
-        const history = settings.choiceHistory || {};
-        const chatKeys = Object.keys(history);
-        
-        let allClusters = [];
-        chatKeys.forEach(chat => {
-            history[chat].forEach((cluster, idx) => {
-                allClusters.push({ ...cluster, chatName: chat, originalIdx: idx });
-            });
-        });
+        const allClusters = await dbGetAll("history");
         
         allClusters.sort((a,b) => b.timestamp - a.timestamp);
+        
+        const chatKeys = [...new Set(allClusters.map(c => c.chatName))];
 
         let filtered = allClusters;
         if (filterChat !== "__ALL__") {
@@ -309,7 +362,7 @@ import {
         let chatOptionsHtml = `<option value="__ALL__" ${filterChat === '__ALL__' ? 'selected' : ''}>All Chats (${allClusters.length} total saves)</option>`;
         chatKeys.sort((a,b) => a === currentChat ? -1 : (b === currentChat ? 1 : a.localeCompare(b))).forEach(chat => {
             const isCurr = chat === currentChat ? '★ [Current] ' : '';
-            const count = history[chat].length;
+            const count = allClusters.filter(c => c.chatName === chat).length;
             chatOptionsHtml += `<option value="${chat}" ${filterChat === chat ? 'selected' : ''}>${isCurr}${chat} (${count})</option>`;
         });
 
@@ -324,7 +377,7 @@ import {
                 const estTokens = Math.round(totalWords * 1.3);
 
                 bodyHtml += `
-                    <div class="cs-history-cluster" data-chat="${cluster.chatName}" data-idx="${cluster.originalIdx}">
+                    <div class="cs-history-cluster" data-id="${cluster.id}">
                         <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:6px;">
                             <div style="display:flex; flex-direction:column; gap:4px;">
                                 <div style="font-weight:bold; font-size:0.95rem; color:#a78bfa;">
@@ -356,7 +409,7 @@ import {
                         <div class="cs-cluster-details">
                             <div style="font-size:0.8rem; background:rgba(0,0,0,0.3); padding:8px; border-radius:4px; border-left:3px solid #8b5cf6;">
                                 <b style="color:#a78bfa;">AI Context Snippet:</b>
-                                <div style="margin-top:4px; max-height:80px; overflow-y:auto; opacity:0.85;">${cluster.aiResponse.replace(/</g, '&lt;')}</div>
+                                <div style="margin-top:4px; max-height:80px; overflow-y:auto; opacity:0.85;">${(cluster.aiContext || "").replace(/</g, '&lt;')}</div>
                             </div>
                             ${cluster.choices.map((c, i) => {
                                 const w = c.trim().split(/\s+/).length;
@@ -382,10 +435,10 @@ import {
         modalOverlay.innerHTML = `
             <div class="cs-modal">
                 <div class="cs-modal-header">
-                    <span style="font-size:1.1rem;"><i class="fa-solid fa-clock-rotate-left"></i> Choice History & Stats</span>
+                    <span style="font-size:1.1rem;"><i class="fa-solid fa-clock-rotate-left"></i> Choice History Database</span>
                     <div style="display:flex; gap:8px;">
-                        <button id="cs_hist_download_btn" class="menu_button cs-touch-btn margin0" title="Export Long-term Log"><i class="fa-solid fa-download"></i> Log</button>
-                        <button id="cs_hist_clearall_btn" class="menu_button cs-touch-btn margin0" style="color:#ef4444;"><i class="fa-solid fa-trash"></i> Clear All</button>
+                        <button id="cs_hist_download_btn" class="menu_button cs-touch-btn margin0" title="Export Dataset to JSON"><i class="fa-solid fa-file-export"></i> Dataset</button>
+                        <button id="cs_hist_clearall_btn" class="menu_button cs-touch-btn margin0" style="color:#ef4444;"><i class="fa-solid fa-trash"></i> Wipe DB</button>
                         <button id="cs_hist_head_close" class="menu_button cs-touch-btn margin0" style="background:rgba(239,68,68,0.2);"><i class="fa-solid fa-xmark"></i> Close</button>
                     </div>
                 </div>
@@ -429,7 +482,7 @@ import {
                 const isOpen = details.style.display === 'flex';
                 details.style.display = isOpen ? 'none' : 'flex';
                 el.innerHTML = isOpen 
-                    ? '<i class="fa-solid fa-chevron-down"></i> Inspect Full Options & AI Context'
+                    ? '<i class="fa-solid fa-chevron-down"></i> Inspect Full Options & Context'
                     : '<i class="fa-solid fa-chevron-up"></i> Hide Full Options';
             };
         });
@@ -437,10 +490,9 @@ import {
         modalOverlay.querySelectorAll('.cs-load-cluster-btn').forEach(btn => {
             btn.onclick = () => {
                 const parent = btn.closest('.cs-history-cluster');
-                const chat = parent.getAttribute('data-chat');
-                const idx = parent.getAttribute('data-idx');
-                const cluster = settings.choiceHistory[chat][idx];
-                renderChoices(cluster.choices);
+                const id = Number(parent.getAttribute('data-id'));
+                const cluster = filtered.find(c => c.id === id);
+                if (cluster) renderChoices(cluster.choices);
                 closeModal();
             };
         });
@@ -448,11 +500,8 @@ import {
         modalOverlay.querySelectorAll('.cs-del-cluster-btn').forEach(btn => {
             btn.onclick = () => {
                 const parent = btn.closest('.cs-history-cluster');
-                const chat = parent.getAttribute('data-chat');
-                const idx = parent.getAttribute('data-idx');
-                settings.choiceHistory[chat].splice(idx, 1);
-                if (settings.choiceHistory[chat].length === 0) delete settings.choiceHistory[chat];
-                save();
+                const id = Number(parent.getAttribute('data-id'));
+                dbDelete("history", id);
                 showHistoryModal($('#cs_hist_chat_select').val(), $('#cs_hist_search_input').val());
             };
         });
@@ -483,30 +532,30 @@ import {
             };
         });
 
-        document.getElementById('cs_hist_download_btn').onclick = downloadForeverLog;
+        document.getElementById('cs_hist_download_btn').onclick = downloadDatasetJSON;
         document.getElementById('cs_hist_clearall_btn').onclick = () => {
-            if (confirm("Delete ALL choice history across all chats? (Your text log file remains untouched)")) {
-                settings.choiceHistory = {};
-                save();
+            if (confirm("Permanently clear ALL choice history across all chats?")) {
+                dbClear("history");
                 showHistoryModal();
             }
         };
     }
 
-    function showFailedModal() {
+    async function showFailedModal() {
         if (document.getElementById('cs_failed_modal')) document.getElementById('cs_failed_modal').remove();
         
         const modalOverlay = document.createElement('div');
         modalOverlay.id = 'cs_failed_modal';
         modalOverlay.className = 'cs-modal-overlay';
         
-        const fails = settings.failedParses || [];
+        const fails = await dbGetAll("fails");
+        fails.sort((a,b) => b.timestamp - a.timestamp);
+
         let bodyHtml = "";
-        
         if (fails.length === 0) {
             bodyHtml = `<div style="text-align:center; padding: 40px 10px; color: rgba(255,255,255,0.4);">No unparsed LLM responses recorded. Everything is parsing smoothly!</div>`;
         } else {
-            fails.forEach((fail, idx) => {
+            fails.forEach(fail => {
                 const dateStr = new Date(fail.timestamp).toLocaleString();
                 const wordCount = fail.rawText.trim().split(/\s+/).length;
                 bodyHtml += `
@@ -520,8 +569,8 @@ import {
                                 </div>
                             </div>
                             <div style="display:flex; gap:8px;">
-                                <button class="menu_button cs-touch-btn cs-fail-copy-btn margin0" data-idx="${idx}"><i class="fa-solid fa-copy"></i> Copy</button>
-                                <button class="menu_button cs-touch-btn cs-fail-del-btn margin0" data-idx="${idx}" style="color:#ef4444;"><i class="fa-solid fa-trash"></i></button>
+                                <button class="menu_button cs-touch-btn cs-fail-copy-btn margin0" data-text="${encodeURIComponent(fail.rawText)}"><i class="fa-solid fa-copy"></i> Copy</button>
+                                <button class="menu_button cs-touch-btn cs-fail-del-btn margin0" data-id="${fail.id}" style="color:#ef4444;"><i class="fa-solid fa-trash"></i></button>
                             </div>
                         </div>
                         <div class="cs-failed-item">${fail.rawText.replace(/</g, '&lt;')}</div>
@@ -557,8 +606,8 @@ import {
 
         modalOverlay.querySelectorAll('.cs-fail-copy-btn').forEach(btn => {
             btn.onclick = () => {
-                const idx = btn.getAttribute('data-idx');
-                navigator.clipboard.writeText(settings.failedParses[idx].rawText).then(() => {
+                const text = decodeURIComponent(btn.getAttribute('data-text'));
+                navigator.clipboard.writeText(text).then(() => {
                     const oldHtml = btn.innerHTML;
                     btn.innerHTML = `<i class="fa-solid fa-check"></i> Copied!`;
                     btn.style.color = '#10b981';
@@ -569,17 +618,15 @@ import {
 
         modalOverlay.querySelectorAll('.cs-fail-del-btn').forEach(btn => {
             btn.onclick = () => {
-                const idx = btn.getAttribute('data-idx');
-                settings.failedParses.splice(idx, 1);
-                save();
+                const id = Number(btn.getAttribute('data-id'));
+                dbDelete("fails", id);
                 showFailedModal();
             };
         });
 
         document.getElementById('cs_fail_clearall_btn').onclick = () => {
             if (confirm("Delete all failed parse records?")) {
-                settings.failedParses = [];
-                save();
+                dbClear("fails");
                 showFailedModal();
             }
         };
@@ -693,7 +740,7 @@ import {
         });
         
         document.getElementById('cs_widget_history').onclick = () => showHistoryModal();
-        document.getElementById('cs_widget_fails').onclick = showFailedModal;
+        document.getElementById('cs_widget_fails').onclick = () => showFailedModal();
     }
 
     function addMagicWandButton() {
@@ -849,15 +896,9 @@ import {
             const choices = await executeWithRetry(() => fetchChoices(storySummary, userStyle, dynamicMatrix, customDirection), 1, 3000);
             
             if (choices && choices.length > 0) {
-                // FIXED: We render the choices visually FIRST before attempting to save to logs.
-                // This prevents silent storage/memory limits from aborting the script before the popup appears.
                 renderChoices(choices);
-                
-                try {
-                    saveToHistory(choices, customDirection);
-                } catch (historyErr) {
-                    log("Warning: Failed to save to history: " + historyErr.message, 1);
-                }
+                try { saveToHistory(choices, customDirection, storySummary, userStyle); } 
+                catch (err) { log("Failed to database history: " + err.message, 1); }
             }
         } catch (e) { 
             log("Fetch failed completely: " + e.message, 1); 
@@ -895,53 +936,66 @@ import {
         return s.trim();
     }
 
+    // --- AGGRESSIVE PARSER IMPLEMENTATION ---
     function parseLLMArray(rawText) {
         let cleanText = rawText.trim();
         let choices = [];
 
-        try {
-            let jsonStr = cleanText.replace(/```(?:json)?|```/gi, '').trim();
-            
-            if (!jsonStr.startsWith('[')) {
-                const firstBrace = jsonStr.indexOf('{');
-                if (firstBrace !== -1) jsonStr = '[' + jsonStr.substring(firstBrace);
-            }
-            if (!jsonStr.endsWith(']')) {
-                const lastBrace = jsonStr.lastIndexOf('}');
-                if (lastBrace !== -1) jsonStr = jsonStr.substring(0, lastBrace + 1) + ']';
-            }
-
-            const startIdx = jsonStr.indexOf('[');
-            const endIdx = jsonStr.lastIndexOf(']');
-            
-            if (startIdx !== -1 && endIdx !== -1) {
-                let parseableStr = jsonStr.substring(startIdx, endIdx + 1);
-                parseableStr = parseableStr.replace(/,\s*([\]}])/g, '$1'); 
-                
-                const parsed = JSON.parse(parseableStr);
-                if (Array.isArray(parsed)) {
-                    for (let obj of parsed) {
-                        if (obj.choice && typeof obj.choice === 'string') {
-                            let text = obj.choice.trim();
-                            if (text.length > 0) choices.push(text);
-                        }
-                    }
-                    if (choices.length > 0) return choices;
-                }
-            }
-        } catch (e) {
-            log("Native JSON.parse failed (" + e.message + "), falling back to Regex extraction...", 2);
+        // 1. ISOLATE TARGET BLOCK: Slice off LLM fluff like "Here are your choices: ```json"
+        let firstBracket = cleanText.indexOf('[');
+        let lastBracket = cleanText.lastIndexOf(']');
+        let jsonStr = cleanText;
+        
+        if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+            jsonStr = cleanText.substring(firstBracket, lastBracket + 1);
         }
 
-        const choiceRegex = /"choice"\s*:\s*"([\s\S]*?)"(?=\s*(?:,|$}|\n))/gi;
+        // 2. NATIVE PARSE (Happy Path)
+        try {
+            let parseableStr = jsonStr.replace(/```(?:json)?|```/gi, '').trim();
+            parseableStr = parseableStr.replace(/,\s*([\]}])/g, '$1'); 
+            
+            const parsed = JSON.parse(parseableStr);
+            if (Array.isArray(parsed)) {
+                for (let obj of parsed) {
+                    if (obj.choice && typeof obj.choice === 'string') {
+                        let text = obj.choice.trim();
+                        if (text.length > 0) choices.push(text);
+                    }
+                }
+                if (choices.length > 0) return choices;
+            }
+        } catch (e) {
+            log("Native JSON.parse failed, falling back to Regex extraction...", 2);
+        }
+
+        // 3. REGEX FALLBACK (Standard broken JSON)
+        const choiceRegex = /"choice"\s*:\s*"([\s\S]*?)"(?=\s*(?:,|$}|\n|\}))/gi;
         let match;
-        while ((match = choiceRegex.exec(cleanText)) !== null) {
+        while ((match = choiceRegex.exec(jsonStr)) !== null) {
             let text = sanitizeOption(match[1]);
             if (text.length > 0) choices.push(text);
         }
 
         if (choices.length > 0) return choices;
 
+        // 4. AGGRESSIVE BRACKET EXTRACTION: The [ {"choice": "R...},{ off-hours...\""} ] scenario.
+        // It slices the text into `{...}` chunks and blindly extracts the longest inner string, ignoring formatting errors.
+        log("Activating Aggressive Bracket Extraction...", 2);
+        let blocks = jsonStr.match(/\{([\s\S]*?)\}/g);
+        if (blocks) {
+            for (let b of blocks) {
+                // Strip the outer braces and the "choice": key if the LLM attempted it.
+                let content = b.replace(/^\{\s*(?:"choice"\s*:\s*)?/, '').replace(/\s*\}$/, '');
+                content = sanitizeOption(content);
+                // If the extracted text is substantial enough to be a narrative option, keep it.
+                if (content.length > 10) choices.push(content);
+            }
+        }
+
+        if (choices.length > 0) return choices;
+
+        // 5. FINAL LINE-BY-LINE (Complete structural failure)
         for (let line of cleanText.split('\n')) {
             let trimmed = line.trim();
             if (REGEX_FALLBACK_LIST.test(trimmed)) {
