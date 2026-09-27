@@ -90,15 +90,23 @@ import {
         const style = document.createElement('style');
         style.id = 'cs_custom_css';
         style.innerHTML = `
-            .cs-modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 99999; display: flex; justify-content: center; align-items: center; backdrop-filter: blur(3px); }
-            .cs-modal { position: relative; background: var(--SmartThemeBlurTintColor, #1e1e2e); border: 1px solid var(--SmartThemeBorderColor, #444); padding: 15px; border-radius: 8px; width: 95vw; max-width: 650px; max-height: 85vh; overflow-y: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.8); display: flex; flex-direction: column; gap: 10px; color: var(--SmartThemeBodyColor, #fff); }
-            .cs-modal-header { display: flex; justify-content: space-between; align-items: center; font-weight: bold; font-size: 1.2em; border-bottom: 1px solid var(--SmartThemeBorderColor, #555); padding-bottom: 10px; margin-bottom: 10px; flex-wrap: wrap; gap: 8px; }
-            .cs-history-chat { margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; overflow: hidden; }
-            .cs-history-chat-title { background: rgba(0,0,0,0.2); padding: 10px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 5px;}
-            .cs-history-chat-title:hover { background: rgba(0,0,0,0.4); }
-            .cs-history-cluster { padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.05); cursor: pointer; display: flex; flex-direction: column; gap: 8px; transition: background 0.2s; }
-            .cs-history-cluster:hover { background: rgba(255,255,255,0.05); }
-            .cs-failed-item { background: rgba(239, 68, 68, 0.05); border-left: 4px solid #ef4444; padding: 12px; margin-bottom: 12px; border-radius: 0 4px 4px 0; font-family: monospace; white-space: pre-wrap; word-break: break-word; font-size: 0.9em; max-height: 300px; overflow-y: auto;}
+            .cs-modal-overlay { position: fixed; inset: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); z-index: 999999; display: flex; justify-content: center; align-items: center; padding: 12px; box-sizing: border-box; touch-action: pan-y; backdrop-filter: blur(4px); }
+            .cs-modal { position: relative; background: var(--SmartThemeBlurTintColor, #1e1e2e); border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 10px; width: 100%; max-width: 680px; height: 90vh; max-height: 850px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.9); color: var(--SmartThemeBodyColor, #fff); }
+            .cs-modal-header { flex: 0 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--SmartThemeBorderColor, #444); background: rgba(0,0,0,0.25); gap: 8px; flex-wrap: wrap; }
+            .cs-modal-body { flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+            .cs-modal-footer { flex: 0 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-top: 1px solid var(--SmartThemeBorderColor, #444); background: rgba(0,0,0,0.25); gap: 10px; }
+            
+            .cs-touch-btn { touch-action: manipulation; -webkit-tap-highlight-color: transparent; cursor: pointer; user-select: none; }
+            
+            .cs-filter-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; background: rgba(0,0,0,0.15); padding: 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); }
+            .cs-stat-pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 12px; background: rgba(255,255,255,0.08); font-size: 0.78rem; font-family: monospace; color: #cbd5e1; }
+            
+            .cs-history-cluster { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.07); border-radius: 6px; padding: 10px; display: flex; flex-direction: column; gap: 8px; transition: border-color 0.2s; }
+            .cs-history-cluster:hover { border-color: rgba(139, 92, 246, 0.4); }
+            .cs-cluster-details { display: none; margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(255,255,255,0.1); flex-direction: column; gap: 8px; }
+            .cs-single-option { background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.05); border-radius: 4px; padding: 8px; font-size: 0.9rem; line-height: 1.4; }
+            
+            .cs-failed-item { background: rgba(239, 68, 68, 0.05); border-left: 4px solid #ef4444; padding: 12px; border-radius: 0 4px 4px 0; font-family: monospace; white-space: pre-wrap; word-break: break-word; font-size: 0.88rem; max-height: 250px; overflow-y: auto; }
             
             #cs_widget_panel { display: none; flex-wrap: nowrap; align-items: center; gap: 4px; width: var(--cs-panel-width, 90vw); max-width: 600px; box-sizing: border-box; }
             #cs_widget_panel.is-open { display: flex; }
@@ -205,21 +213,23 @@ import {
         return "No AI message found.";
     }
 
-    function saveToHistory(choices) {
+    function saveToHistory(choices, customDirection = "") {
         const chatName = context.chatId || context.name2 || "Unknown_Chat";
         const aiResponse = extractAIResponseContext();
         const timestamp = Date.now();
         
         if (!settings.choiceHistory[chatName]) settings.choiceHistory[chatName] = [];
         
-        settings.choiceHistory[chatName].unshift({ timestamp, aiResponse, choices });
+        const entry = { timestamp, aiResponse, choices, direction: customDirection.trim() };
+        settings.choiceHistory[chatName].unshift(entry);
         
         if (!settings.foreverLogText) settings.foreverLogText = "";
         let logEntry = `\n=================================\n`;
         logEntry += `DATE: ${new Date(timestamp).toLocaleString()}\n`;
         logEntry += `CHAT: ${chatName}\n`;
+        if (customDirection.trim()) logEntry += `CUSTOM DIRECTION: "${customDirection.trim()}"\n`;
         logEntry += `AI CONTEXT:\n${aiResponse.substring(0, 300)}${aiResponse.length > 300 ? '...\n' : '\n'}`;
-        logEntry += `GENERATED CHOICES:\n`;
+        logEntry += `GENERATED CHOICES (${choices.length}):\n`;
         choices.forEach((c, i) => { logEntry += `  [${i+1}] ${c}\n`; });
         logEntry += `=================================\n`;
         settings.foreverLogText += logEntry;
@@ -244,141 +254,243 @@ import {
         URL.revokeObjectURL(url);
     }
 
-    // --- MODALS (History & Failed) ---
+    function bindTapClose(element, callback) {
+        if (!element) return;
+        let touched = false;
+        element.addEventListener('touchend', (e) => {
+            touched = true;
+            e.preventDefault();
+            e.stopPropagation();
+            callback();
+        }, { passive: false });
+        element.addEventListener('click', (e) => {
+            if (touched) { touched = false; return; }
+            e.preventDefault();
+            e.stopPropagation();
+            callback();
+        });
+    }
 
-    function showHistoryModal() {
+    // --- MODALS (Choice History & Failed Parses) ---
+
+    function showHistoryModal(filterChat = "__ALL__", searchKeyword = "") {
         if (document.getElementById('cs_history_modal')) document.getElementById('cs_history_modal').remove();
         
         const modalOverlay = document.createElement('div');
         modalOverlay.id = 'cs_history_modal';
         modalOverlay.className = 'cs-modal-overlay';
         
-        // Tap outside to close
-        modalOverlay.onclick = (e) => {
-            if (e.target === modalOverlay) modalOverlay.remove();
-        };
-        
-        let html = `
-            <div class="cs-modal">
-                <div class="cs-modal-header">
-                    <span><i class="fa-solid fa-clock-rotate-left"></i> Choice History</span>
-                    <div style="display:flex; gap: 8px; flex-wrap: wrap;">
-                        <button id="cs_hist_download" class="menu_button interactable margin0" title="Export Log to Downloads Folder"><i class="fa-solid fa-download"></i> Log</button>
-                        <button id="cs_hist_clearall" class="menu_button interactable margin0" style="color: #ef4444;"><i class="fa-solid fa-trash"></i> All</button>
-                        <button id="cs_hist_close" class="menu_button interactable margin0"><i class="fa-solid fa-xmark"></i> Close</button>
-                    </div>
-                </div>
-                <div class="cs-modal-body" style="display:flex; flex-direction:column; gap: 10px;">
-        `;
-        
         const currentChat = context.chatId || context.name2 || "Unknown_Chat";
         const history = settings.choiceHistory || {};
-        const chatNames = Object.keys(history).sort((a,b) => a === currentChat ? -1 : (b === currentChat ? 1 : 0));
+        const chatKeys = Object.keys(history);
         
-        if (chatNames.length === 0) {
-            html += `<div style="text-align:center; padding: 20px; color: rgba(255,255,255,0.5);">No choice history saved yet.</div>`;
+        let allClusters = [];
+        chatKeys.forEach(chat => {
+            history[chat].forEach((cluster, idx) => {
+                allClusters.push({ ...cluster, chatName: chat, originalIdx: idx });
+            });
+        });
+        
+        allClusters.sort((a,b) => b.timestamp - a.timestamp);
+
+        let filtered = allClusters;
+        if (filterChat !== "__ALL__") {
+            filtered = filtered.filter(c => c.chatName === filterChat);
+        }
+        if (searchKeyword.trim() !== "") {
+            const kw = searchKeyword.toLowerCase();
+            filtered = filtered.filter(c => 
+                c.chatName.toLowerCase().includes(kw) || 
+                c.choices.some(choice => choice.toLowerCase().includes(kw)) ||
+                (c.direction && c.direction.toLowerCase().includes(kw))
+            );
+        }
+
+        let chatOptionsHtml = `<option value="__ALL__" ${filterChat === '__ALL__' ? 'selected' : ''}>All Chats (${allClusters.length} total saves)</option>`;
+        chatKeys.sort((a,b) => a === currentChat ? -1 : (b === currentChat ? 1 : a.localeCompare(b))).forEach(chat => {
+            const isCurr = chat === currentChat ? '★ [Current] ' : '';
+            const count = history[chat].length;
+            chatOptionsHtml += `<option value="${chat}" ${filterChat === chat ? 'selected' : ''}>${isCurr}${chat} (${count})</option>`;
+        });
+
+        let bodyHtml = "";
+        if (filtered.length === 0) {
+            bodyHtml = `<div style="text-align:center; padding: 40px 10px; color: rgba(255,255,255,0.4);">No saved choice history matches the criteria.</div>`;
         } else {
-            chatNames.forEach(chat => {
-                const clusters = history[chat];
-                if (!clusters || clusters.length === 0) return;
-                
-                html += `
-                    <div class="cs-history-chat">
-                        <div class="cs-history-chat-title" data-chat="${chat}">
-                            <span><b>${chat}</b> <small>(${clusters.length} generations)</small> ${chat === currentChat ? '<span style="color:#10b981; font-size:0.8em; margin-left:5px;">[Current Chat]</span>' : ''}</span>
-                            <div style="display:flex; gap:15px; align-items:center;">
-                                <i class="fa-solid fa-trash chat-delete-icon" data-chat="${chat}" style="color: #ef4444; font-size: 1.1em;" title="Clear this chat's history"></i>
-                                <i class="fa-solid fa-chevron-down chat-toggle-icon"></i>
+            filtered.forEach(cluster => {
+                const dateStr = new Date(cluster.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' ' + new Date(cluster.timestamp).toLocaleDateString();
+                const totalWords = cluster.choices.reduce((acc, c) => acc + (c.trim() ? c.trim().split(/\s+/).length : 0), 0);
+                const totalChars = cluster.choices.reduce((acc, c) => acc + c.length, 0);
+                const estTokens = Math.round(totalWords * 1.3);
+
+                bodyHtml += `
+                    <div class="cs-history-cluster" data-chat="${cluster.chatName}" data-idx="${cluster.originalIdx}">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:6px;">
+                            <div style="display:flex; flex-direction:column; gap:4px;">
+                                <div style="font-weight:bold; font-size:0.95rem; color:#a78bfa;">
+                                    ${cluster.chatName} 
+                                    ${cluster.chatName === currentChat ? '<span style="color:#10b981; font-size:0.75rem; font-weight:normal;">(Active Chat)</span>' : ''}
+                                </div>
+                                <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                                    <span class="cs-stat-pill"><i class="fa-solid fa-clock"></i> ${dateStr}</span>
+                                    <span class="cs-stat-pill" style="color:#38bdf8;"><i class="fa-solid fa-list-ol"></i> ${cluster.choices.length} options</span>
+                                    <span class="cs-stat-pill"><i class="fa-solid fa-font"></i> ${totalWords}w / ${totalChars}c</span>
+                                    <span class="cs-stat-pill" style="color:#fbbf24;"><i class="fa-solid fa-microchip"></i> ~${estTokens} tok</span>
+                                </div>
+                                ${cluster.direction ? `<div style="font-size:0.8rem; color:#f472b6;"><b>Prompt:</b> "${cluster.direction}"</div>` : ''}
+                            </div>
+                            <div style="display:flex; gap:8px;">
+                                <button class="menu_button cs-touch-btn cs-load-cluster-btn margin0" style="padding:4px 8px; font-size:0.8rem; color:#10b981;" title="Load into choices UI"><i class="fa-solid fa-arrow-up-right-from-square"></i> Use</button>
+                                <button class="menu_button cs-touch-btn cs-del-cluster-btn margin0" style="padding:4px 8px; font-size:0.8rem; color:#ef4444;" title="Delete this cluster"><i class="fa-solid fa-trash"></i></button>
                             </div>
                         </div>
-                        <div class="cs-history-chat-content" id="cs_hist_content_${chat}" style="${chat === currentChat ? 'display:block;' : 'display:none;'}">
-                `;
-                
-                clusters.forEach((cluster, idx) => {
-                    const dateStr = new Date(cluster.timestamp).toLocaleString();
-                    const firstLines = cluster.choices.map(c => c.split('.')[0] + '...').join('<br><span style="color:rgba(255,255,255,0.3);">-</span> ');
-                    
-                    html += `
-                            <div class="cs-history-cluster" data-chat="${chat}" data-idx="${idx}">
-                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px dashed rgba(255,255,255,0.2); padding-bottom:3px; margin-bottom:3px;">
-                                    <small style="color:#8b5cf6;"><i class="fa-solid fa-bolt"></i> ${dateStr} | ${cluster.choices.length} options</small>
-                                    <i class="fa-solid fa-trash cluster-delete-icon" data-chat="${chat}" data-idx="${idx}" style="color: #ef4444; padding:5px;" title="Delete cluster"></i>
-                                </div>
-                                <div style="font-size:0.9em; max-height: 70px; overflow:hidden; text-overflow:ellipsis;">
-                                    <span style="color:rgba(255,255,255,0.3);">-</span> ${firstLines}
-                                </div>
+
+                        <div class="cs-cluster-preview" style="font-size:0.88rem; opacity:0.85; cursor:pointer;">
+                            ${cluster.choices.map((c, i) => `<div><span style="color:#8b5cf6;">[${i+1}]</span> ${c.substring(0, 110)}...</div>`).join('')}
+                        </div>
+
+                        <div class="cs-toggle-inspect" style="font-size:0.8rem; color:#8b5cf6; cursor:pointer; text-decoration:underline;">
+                            <i class="fa-solid fa-chevron-down"></i> Inspect Full Options & AI Context
+                        </div>
+
+                        <div class="cs-cluster-details">
+                            <div style="font-size:0.8rem; background:rgba(0,0,0,0.3); padding:8px; border-radius:4px; border-left:3px solid #8b5cf6;">
+                                <b style="color:#a78bfa;">AI Context Snippet:</b>
+                                <div style="margin-top:4px; max-height:80px; overflow-y:auto; opacity:0.85;">${cluster.aiResponse.replace(/</g, '&lt;')}</div>
                             </div>
-                    `;
-                });
-                
-                html += `</div></div>`;
+                            ${cluster.choices.map((c, i) => {
+                                const w = c.trim().split(/\s+/).length;
+                                return `
+                                    <div class="cs-single-option">
+                                        <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:0.8rem; color:#94a3b8;">
+                                            <span><b>Option ${i+1}</b> (${w} words, ${c.length} chars)</span>
+                                            <div style="display:flex; gap:6px;">
+                                                <button class="cs-copy-single-btn menu_button cs-touch-btn margin0" data-text="${encodeURIComponent(c)}" style="padding:2px 6px; font-size:0.75rem;"><i class="fa-solid fa-copy"></i> Copy</button>
+                                                <button class="cs-insert-single-btn menu_button cs-touch-btn margin0" data-text="${encodeURIComponent(c)}" style="padding:2px 6px; font-size:0.75rem; color:#10b981;"><i class="fa-solid fa-pen-to-square"></i> Send to Input</button>
+                                            </div>
+                                        </div>
+                                        <div>${c.replace(/</g, '&lt;')}</div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                `;
             });
         }
-        
-        html += `</div></div>`;
-        modalOverlay.innerHTML = html;
+
+        modalOverlay.innerHTML = `
+            <div class="cs-modal">
+                <div class="cs-modal-header">
+                    <span style="font-size:1.1rem;"><i class="fa-solid fa-clock-rotate-left"></i> Choice History & Stats</span>
+                    <div style="display:flex; gap:8px;">
+                        <button id="cs_hist_download_btn" class="menu_button cs-touch-btn margin0" title="Export Long-term Log"><i class="fa-solid fa-download"></i> Log</button>
+                        <button id="cs_hist_clearall_btn" class="menu_button cs-touch-btn margin0" style="color:#ef4444;"><i class="fa-solid fa-trash"></i> Clear All</button>
+                        <button id="cs_hist_head_close" class="menu_button cs-touch-btn margin0" style="background:rgba(239,68,68,0.2);"><i class="fa-solid fa-xmark"></i> Close</button>
+                    </div>
+                </div>
+
+                <div style="padding:10px 12px; flex:0 0 auto;">
+                    <div class="cs-filter-bar">
+                        <select id="cs_hist_chat_select" class="text_pole" style="flex:1; min-width:180px;">${chatOptionsHtml}</select>
+                        <input type="text" id="cs_hist_search_input" class="text_pole" placeholder="Search keywords..." value="${searchKeyword}" style="flex:1; min-width:140px;">
+                    </div>
+                </div>
+
+                <div class="cs-modal-body">${bodyHtml}</div>
+
+                <div class="cs-modal-footer">
+                    <div style="font-size:0.85rem; color:#94a3b8;">Showing <b>${filtered.length}</b> of <b>${allClusters.length}</b> records</div>
+                    <button id="cs_hist_foot_close" class="menu_button cs-touch-btn margin0" style="min-width:100px; font-weight:bold;"><i class="fa-solid fa-check"></i> Close</button>
+                </div>
+            </div>
+        `;
         document.body.appendChild(modalOverlay);
-        
-        document.getElementById('cs_hist_close').onclick = () => modalOverlay.remove();
-        
-        modalOverlay.querySelectorAll('.cs-history-chat-title').forEach(el => {
-            el.onclick = (e) => {
-                if (e.target.classList.contains('chat-delete-icon')) return; 
-                const chat = el.getAttribute('data-chat');
-                const content = document.getElementById(`cs_hist_content_${chat}`);
-                const icon = el.querySelector('.chat-toggle-icon');
-                if (content.style.display === 'none') {
-                    content.style.display = 'block';
-                    icon.classList.replace('fa-chevron-down', 'fa-chevron-up');
-                } else {
-                    content.style.display = 'none';
-                    icon.classList.replace('fa-chevron-up', 'fa-chevron-down');
-                }
+
+        const closeModal = () => modalOverlay.remove();
+        bindTapClose(document.getElementById('cs_hist_head_close'), closeModal);
+        bindTapClose(document.getElementById('cs_hist_foot_close'), closeModal);
+        modalOverlay.addEventListener('click', (e) => { if (e.target === modalOverlay) closeModal(); });
+
+        $('#cs_hist_chat_select').on('change', function() {
+            showHistoryModal(this.value, $('#cs_hist_search_input').val());
+        });
+        $('#cs_hist_search_input').on('input', function() {
+            const val = this.value;
+            clearTimeout(window.__cs_search_timer);
+            window.__cs_search_timer = setTimeout(() => {
+                showHistoryModal($('#cs_hist_chat_select').val(), val);
+            }, 300);
+        });
+
+        modalOverlay.querySelectorAll('.cs-toggle-inspect').forEach(el => {
+            el.onclick = () => {
+                const details = el.nextElementSibling;
+                const isOpen = details.style.display === 'flex';
+                details.style.display = isOpen ? 'none' : 'flex';
+                el.innerHTML = isOpen 
+                    ? '<i class="fa-solid fa-chevron-down"></i> Inspect Full Options & AI Context'
+                    : '<i class="fa-solid fa-chevron-up"></i> Hide Full Options';
             };
         });
-        
-        modalOverlay.querySelectorAll('.cs-history-cluster').forEach(el => {
-            el.onclick = (e) => {
-                if (e.target.classList.contains('cluster-delete-icon')) return;
-                const chat = el.getAttribute('data-chat');
-                const idx = el.getAttribute('data-idx');
+
+        modalOverlay.querySelectorAll('.cs-load-cluster-btn').forEach(btn => {
+            btn.onclick = () => {
+                const parent = btn.closest('.cs-history-cluster');
+                const chat = parent.getAttribute('data-chat');
+                const idx = parent.getAttribute('data-idx');
                 const cluster = settings.choiceHistory[chat][idx];
                 renderChoices(cluster.choices);
-                modalOverlay.remove();
+                closeModal();
             };
         });
-        
-        modalOverlay.querySelectorAll('.chat-delete-icon').forEach(el => {
-            el.onclick = (e) => {
-                const chat = el.getAttribute('data-chat');
-                if (confirm(`Delete ALL choice history for chat: ${chat}?`)) {
-                    delete settings.choiceHistory[chat];
-                    save();
-                    showHistoryModal(); 
-                }
-            };
-        });
-        
-        modalOverlay.querySelectorAll('.cluster-delete-icon').forEach(el => {
-            el.onclick = (e) => {
-                const chat = el.getAttribute('data-chat');
-                const idx = el.getAttribute('data-idx');
+
+        modalOverlay.querySelectorAll('.cs-del-cluster-btn').forEach(btn => {
+            btn.onclick = () => {
+                const parent = btn.closest('.cs-history-cluster');
+                const chat = parent.getAttribute('data-chat');
+                const idx = parent.getAttribute('data-idx');
                 settings.choiceHistory[chat].splice(idx, 1);
                 if (settings.choiceHistory[chat].length === 0) delete settings.choiceHistory[chat];
                 save();
-                showHistoryModal(); 
+                showHistoryModal($('#cs_hist_chat_select').val(), $('#cs_hist_search_input').val());
             };
         });
-        
-        document.getElementById('cs_hist_clearall').onclick = () => {
-            if (confirm("Delete ALL choice history across ALL chats? (Your Forever Log text file will remain intact)")) {
+
+        modalOverlay.querySelectorAll('.cs-copy-single-btn').forEach(btn => {
+            btn.onclick = () => {
+                const text = decodeURIComponent(btn.getAttribute('data-text'));
+                navigator.clipboard.writeText(text).then(() => {
+                    const oldHtml = btn.innerHTML;
+                    btn.innerHTML = `<i class="fa-solid fa-check"></i> Copied!`;
+                    btn.style.color = '#10b981';
+                    setTimeout(() => { btn.innerHTML = oldHtml; btn.style.color = ''; }, 1500);
+                });
+            };
+        });
+
+        modalOverlay.querySelectorAll('.cs-insert-single-btn').forEach(btn => {
+            btn.onclick = () => {
+                const text = decodeURIComponent(btn.getAttribute('data-text'));
+                if (!DOM_textarea) DOM_textarea = document.getElementById("send_textarea");
+                if (DOM_textarea) {
+                    DOM_textarea.value = text;
+                    lastInsertedText = text;
+                    DOM_textarea.dispatchEvent(new Event("input", { bubbles: true }));
+                    DOM_textarea.focus();
+                }
+                closeModal();
+            };
+        });
+
+        document.getElementById('cs_hist_download_btn').onclick = downloadForeverLog;
+        document.getElementById('cs_hist_clearall_btn').onclick = () => {
+            if (confirm("Delete ALL choice history across all chats? (Your text log file remains untouched)")) {
                 settings.choiceHistory = {};
                 save();
                 showHistoryModal();
             }
         };
-        
-        document.getElementById('cs_hist_download').onclick = downloadForeverLog;
     }
 
     function showFailedModal() {
@@ -388,78 +500,89 @@ import {
         modalOverlay.id = 'cs_failed_modal';
         modalOverlay.className = 'cs-modal-overlay';
         
-        // Tap outside to close
-        modalOverlay.onclick = (e) => {
-            if (e.target === modalOverlay) modalOverlay.remove();
-        };
-        
-        let html = `
-            <div class="cs-modal">
-                <div class="cs-modal-header">
-                    <span><i class="fa-solid fa-triangle-exclamation"></i> Failed Parses</span>
-                    <div style="display:flex; gap: 8px; flex-wrap: wrap;">
-                        <button id="cs_fail_clearall" class="menu_button interactable margin0" style="color: #ef4444;"><i class="fa-solid fa-trash"></i> All</button>
-                        <button id="cs_fail_close" class="menu_button interactable margin0"><i class="fa-solid fa-xmark"></i> Close</button>
-                    </div>
-                </div>
-                <div class="cs-modal-body" style="display:flex; flex-direction:column; gap: 10px;">
-        `;
-        
         const fails = settings.failedParses || [];
+        let bodyHtml = "";
+        
         if (fails.length === 0) {
-            html += `<div style="text-align:center; padding: 20px; color: rgba(255,255,255,0.5);">No failed parses found!</div>`;
+            bodyHtml = `<div style="text-align:center; padding: 40px 10px; color: rgba(255,255,255,0.4);">No unparsed LLM responses recorded. Everything is parsing smoothly!</div>`;
         } else {
             fails.forEach((fail, idx) => {
                 const dateStr = new Date(fail.timestamp).toLocaleString();
-                html += `
-                    <div class="cs-failed-item">
-                        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px dashed rgba(239, 68, 68, 0.4); padding-bottom:5px; margin-bottom:8px;">
-                            <div><small style="color:#ef4444;">${dateStr} | Chat: ${fail.chatName}</small></div>
-                            <div style="display:flex; gap:15px;">
-                                <i class="fa-solid fa-copy copy-fail-icon" data-idx="${idx}" style="cursor:pointer; font-size:1.1em;" title="Copy"></i>
-                                <i class="fa-solid fa-trash del-fail-icon" data-idx="${idx}" style="cursor:pointer; font-size:1.1em;" title="Delete"></i>
+                const wordCount = fail.rawText.trim().split(/\s+/).length;
+                bodyHtml += `
+                    <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.07); border-radius:6px; padding:10px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
+                            <div>
+                                <b style="color:#ef4444;">${fail.chatName}</b>
+                                <div style="display:flex; gap:6px; margin-top:3px;">
+                                    <span class="cs-stat-pill">${dateStr}</span>
+                                    <span class="cs-stat-pill">${wordCount} words / ${fail.rawText.length} chars</span>
+                                </div>
+                            </div>
+                            <div style="display:flex; gap:8px;">
+                                <button class="menu_button cs-touch-btn cs-fail-copy-btn margin0" data-idx="${idx}"><i class="fa-solid fa-copy"></i> Copy</button>
+                                <button class="menu_button cs-touch-btn cs-fail-del-btn margin0" data-idx="${idx}" style="color:#ef4444;"><i class="fa-solid fa-trash"></i></button>
                             </div>
                         </div>
-                        <div>${fail.rawText.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+                        <div class="cs-failed-item">${fail.rawText.replace(/</g, '&lt;')}</div>
                     </div>
                 `;
             });
         }
-        
-        html += `</div></div>`;
-        modalOverlay.innerHTML = html;
+
+        modalOverlay.innerHTML = `
+            <div class="cs-modal">
+                <div class="cs-modal-header">
+                    <span style="font-size:1.1rem;"><i class="fa-solid fa-triangle-exclamation" style="color:#ef4444;"></i> Unparsed Raw Responses (${fails.length})</span>
+                    <div style="display:flex; gap:8px;">
+                        <button id="cs_fail_clearall_btn" class="menu_button cs-touch-btn margin0" style="color:#ef4444;"><i class="fa-solid fa-trash"></i> Clear All</button>
+                        <button id="cs_fail_head_close" class="menu_button cs-touch-btn margin0" style="background:rgba(239,68,68,0.2);"><i class="fa-solid fa-xmark"></i> Close</button>
+                    </div>
+                </div>
+
+                <div class="cs-modal-body">${bodyHtml}</div>
+
+                <div class="cs-modal-footer">
+                    <div style="font-size:0.85rem; color:#94a3b8;">Copy readable sections directly into your story.</div>
+                    <button id="cs_fail_foot_close" class="menu_button cs-touch-btn margin0" style="min-width:100px; font-weight:bold;"><i class="fa-solid fa-check"></i> Close</button>
+                </div>
+            </div>
+        `;
         document.body.appendChild(modalOverlay);
-        
-        document.getElementById('cs_fail_close').onclick = () => modalOverlay.remove();
-        document.getElementById('cs_fail_clearall').onclick = () => {
-            if (confirm("Delete ALL failed parses?")) {
+
+        const closeModal = () => modalOverlay.remove();
+        bindTapClose(document.getElementById('cs_fail_head_close'), closeModal);
+        bindTapClose(document.getElementById('cs_fail_foot_close'), closeModal);
+        modalOverlay.addEventListener('click', (e) => { if (e.target === modalOverlay) closeModal(); });
+
+        modalOverlay.querySelectorAll('.cs-fail-copy-btn').forEach(btn => {
+            btn.onclick = () => {
+                const idx = btn.getAttribute('data-idx');
+                navigator.clipboard.writeText(settings.failedParses[idx].rawText).then(() => {
+                    const oldHtml = btn.innerHTML;
+                    btn.innerHTML = `<i class="fa-solid fa-check"></i> Copied!`;
+                    btn.style.color = '#10b981';
+                    setTimeout(() => { btn.innerHTML = oldHtml; btn.style.color = ''; }, 1500);
+                });
+            };
+        });
+
+        modalOverlay.querySelectorAll('.cs-fail-del-btn').forEach(btn => {
+            btn.onclick = () => {
+                const idx = btn.getAttribute('data-idx');
+                settings.failedParses.splice(idx, 1);
+                save();
+                showFailedModal();
+            };
+        });
+
+        document.getElementById('cs_fail_clearall_btn').onclick = () => {
+            if (confirm("Delete all failed parse records?")) {
                 settings.failedParses = [];
                 save();
                 showFailedModal();
             }
         };
-        
-        modalOverlay.querySelectorAll('.copy-fail-icon').forEach(el => {
-            el.onclick = () => {
-                const idx = el.getAttribute('data-idx');
-                navigator.clipboard.writeText(settings.failedParses[idx].rawText).then(() => {
-                    el.classList.replace('fa-copy', 'fa-check');
-                    el.style.color = '#10b981';
-                    setTimeout(() => {
-                        el.classList.replace('fa-check', 'fa-copy');
-                        el.style.color = '';
-                    }, 2000);
-                });
-            };
-        });
-        
-        modalOverlay.querySelectorAll('.del-fail-icon').forEach(el => {
-            el.onclick = () => {
-                settings.failedParses.splice(el.getAttribute('data-idx'), 1);
-                save();
-                showFailedModal();
-            };
-        });
     }
 
     function buildFloatingWidget() {
@@ -472,15 +595,15 @@ import {
         if (settings.widget_bottom) widget.style.bottom = settings.widget_bottom;
 
         widget.innerHTML = `
-            <div id="cs_widget_btn" title="Drag to move. Click to toggle.">
+            <div id="cs_widget_btn" class="cs-touch-btn" title="Drag to move. Click to toggle.">
                 <i class="fa-solid fa-code-branch"></i>
             </div>
             <div id="cs_widget_panel">
                 <input type="text" id="cs_widget_input" placeholder="Custom direction..." autocomplete="off">
-                <button class="cs_widget_action cs-widget-extra-btn" id="cs_widget_history" title="Choice History"><i class="fa-solid fa-clock-rotate-left"></i></button>
-                <button class="cs_widget_action cs-widget-extra-btn" id="cs_widget_fails" title="Failed Parses"><i class="fa-solid fa-triangle-exclamation"></i></button>
-                <button class="cs_widget_action" id="cs_widget_go" title="Generate Choices"><i class="fa-solid fa-play"></i></button>
-                <button class="cs_widget_action" id="cs_widget_close" title="Close Panel"><i class="fa-solid fa-xmark"></i></button>
+                <button class="cs_widget_action cs-widget-extra-btn cs-touch-btn" id="cs_widget_history" title="Choice History"><i class="fa-solid fa-clock-rotate-left"></i></button>
+                <button class="cs_widget_action cs-widget-extra-btn cs-touch-btn" id="cs_widget_fails" title="Failed Parses"><i class="fa-solid fa-triangle-exclamation"></i></button>
+                <button class="cs_widget_action cs-touch-btn" id="cs_widget_go" title="Generate Choices"><i class="fa-solid fa-play"></i></button>
+                <button class="cs_widget_action cs-touch-btn" id="cs_widget_close" title="Close Panel"><i class="fa-solid fa-xmark"></i></button>
             </div>
         `;
         document.body.appendChild(widget);
@@ -539,7 +662,7 @@ import {
                     input.blur();
                 } else {
                     panel.classList.add('is-open');
-                    setTimeout(() => input.focus(), 10); 
+                    setTimeout(() => input.focus(), 15); 
                 }
             } else {
                 settings.widget_left = widget.style.left;
@@ -569,7 +692,7 @@ import {
             }
         });
         
-        document.getElementById('cs_widget_history').onclick = showHistoryModal;
+        document.getElementById('cs_widget_history').onclick = () => showHistoryModal();
         document.getElementById('cs_widget_fails').onclick = showFailedModal;
     }
 
@@ -579,7 +702,7 @@ import {
 
         const btn = document.createElement("div");
         btn.id = "cs_wand_btn";
-        btn.className = "list-group-item flex-container flexGap5 interactable";
+        btn.className = "list-group-item flex-container flexGap5 interactable cs-touch-btn";
         btn.onclick = (e) => { 
             e.stopPropagation(); 
             $("#extensionsMenu").hide(); 
@@ -726,7 +849,7 @@ import {
             const choices = await executeWithRetry(() => fetchChoices(storySummary, userStyle, dynamicMatrix, customDirection), 1, 3000);
             
             if (choices && choices.length > 0) {
-                saveToHistory(choices);
+                saveToHistory(choices, customDirection);
                 renderChoices(choices);
             }
         } catch (e) { 
@@ -882,11 +1005,11 @@ import {
             controls.className = "choice-stream-controls";
             
             const minBtn = document.createElement("button");
-            minBtn.className = "choice-stream-util-btn interactable";
+            minBtn.className = "choice-stream-util-btn interactable cs-touch-btn";
             minBtn.innerHTML = "<i class='fa-solid fa-minus'></i>";
             
             const closeBtn = document.createElement("button");
-            closeBtn.className = "choice-stream-util-btn interactable";
+            closeBtn.className = "choice-stream-util-btn interactable cs-touch-btn";
             closeBtn.innerHTML = "<i class='fa-solid fa-xmark'></i>";
             
             closeBtn.onclick = (e) => { e.stopPropagation(); clearUI(); };
@@ -912,7 +1035,7 @@ import {
                 card.id = `choice_card_${index}`;
 
                 const toggleBtn = document.createElement("div");
-                toggleBtn.className = "choice-card-toggle interactable";
+                toggleBtn.className = "choice-card-toggle interactable cs-touch-btn";
                 toggleBtn.innerHTML = "<i class='fa-solid fa-chevron-right choice-card-toggle-icon'></i>";
                 
                 toggleBtn.onclick = (e) => {
@@ -921,7 +1044,7 @@ import {
                 };
 
                 const btn = document.createElement("button");
-                btn.className = "choice-stream-btn interactable";
+                btn.className = "choice-stream-btn interactable cs-touch-btn";
                 btn.innerText = text;
                 btn.onclick = (e) => {
                     e.preventDefault();
@@ -938,7 +1061,7 @@ import {
                 };
 
                 const cardCloseBtn = document.createElement("div");
-                cardCloseBtn.className = "choice-card-close interactable";
+                cardCloseBtn.className = "choice-card-close interactable cs-touch-btn";
                 cardCloseBtn.innerHTML = "<i class='fa-solid fa-xmark'></i>";
                 cardCloseBtn.onclick = (e) => {
                     e.stopPropagation();
@@ -985,7 +1108,7 @@ import {
                 <label>Target Options:</label>
                 <input type="text" class="text_pole matrix-range" style="width:70px; text-align:center;" value="${rule.range}" placeholder="1-3" data-idx="${index}">
                 <input type="text" class="text_pole matrix-text" style="flex:1" value="${rule.text.replace(/"/g, '&quot;')}" placeholder="Style rule..." data-idx="${index}">
-                <div class="menu_button interactable matrix-del margin0" style="padding:4px 8px;" data-idx="${index}"><i class="fa-solid fa-trash"></i></div>
+                <div class="menu_button interactable cs-touch-btn matrix-del margin0" style="padding:4px 8px;" data-idx="${index}"><i class="fa-solid fa-trash"></i></div>
             `;
             container.appendChild(row);
         });
@@ -1034,7 +1157,7 @@ import {
 
                         <div class="flex-container alignitemscenter marginBot5 justifySpaceBetween marginTop5" style="border-bottom: 1px solid var(--SmartThemeBorderColor); padding-bottom: 5px;">
                             <h4 class="margin0">Prompts & Matrix</h4>
-                            <div id="cs_reset_prompts" class="menu_button interactable margin0" tabindex="0" role="button" title="Restore Default Prompts">
+                            <div id="cs_reset_prompts" class="menu_button interactable cs-touch-btn margin0" tabindex="0" role="button" title="Restore Default Prompts">
                                 <i class="fa-solid fa-rotate-left"></i> Restore Default Prompts
                             </div>
                         </div>
@@ -1052,7 +1175,7 @@ import {
                         <div class="flex-container flexFlowColumn marginBot5" style="border-left: 2px solid var(--SmartThemeBorderColor); padding-left: 10px;">
                             <div class="flex-container alignitemscenter justifySpaceBetween">
                                 <label><strong>Option Tone Matrix</strong> <small>(Applied to {{matrix_block}})</small></label>
-                                <div id="cs_add_matrix" class="menu_button interactable margin0" tabindex="0" role="button" style="padding: 2px 8px; font-size: 0.85rem;">
+                                <div id="cs_add_matrix" class="menu_button interactable cs-touch-btn margin0" tabindex="0" role="button" style="padding: 2px 8px; font-size: 0.85rem;">
                                     <i class="fa-solid fa-plus"></i> Add Rule
                                 </div>
                             </div>
@@ -1106,13 +1229,13 @@ import {
                         
                         <hr style="border-color: rgba(255,255,255,0.1); margin: 8px 0;">
                         <div class="flex-container marginBot5" style="gap: 5px;">
-                            <div id="cs_test" class="menu_button interactable flex1 margin0" tabindex="0" role="button">
+                            <div id="cs_test" class="menu_button interactable cs-touch-btn flex1 margin0" tabindex="0" role="button">
                                 <i class="fa-solid fa-eye"></i> Test UI
                             </div>
-                            <div id="cs_manual" class="menu_button interactable flex1 margin0" tabindex="0" role="button">
+                            <div id="cs_manual" class="menu_button interactable cs-touch-btn flex1 margin0" tabindex="0" role="button">
                                 <i class="fa-solid fa-wand-magic-sparkles"></i> Force Gen
                             </div>
-                            <div id="cs_reset_widget" class="menu_button interactable flex1 margin0" tabindex="0" role="button" title="Snap Floating Widget back to Default">
+                            <div id="cs_reset_widget" class="menu_button interactable cs-touch-btn flex1 margin0" tabindex="0" role="button" title="Snap Floating Widget back to Default">
                                 <i class="fa-solid fa-arrows-to-dot"></i> Reset Widget Pos
                             </div>
                         </div>
