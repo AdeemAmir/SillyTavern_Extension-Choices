@@ -92,9 +92,7 @@ import {
         style.innerHTML = `
             .cs-modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 99999; display: flex; justify-content: center; align-items: center; backdrop-filter: blur(3px); }
             .cs-modal { position: relative; background: var(--SmartThemeBlurTintColor, #1e1e2e); border: 1px solid var(--SmartThemeBorderColor, #444); padding: 15px; border-radius: 8px; width: 95vw; max-width: 650px; max-height: 85vh; overflow-y: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.8); display: flex; flex-direction: column; gap: 10px; color: var(--SmartThemeBodyColor, #fff); }
-            .cs-modal-close-btn { position: absolute; top: 12px; right: 15px; cursor: pointer; font-size: 1.4rem; color: var(--SmartThemeBodyColor, #fff); opacity: 0.6; transition: opacity 0.2s, color 0.2s; z-index: 10; }
-            .cs-modal-close-btn:hover { opacity: 1; color: #ef4444; }
-            .cs-modal-header { display: flex; justify-content: space-between; align-items: center; font-weight: bold; font-size: 1.2em; border-bottom: 1px solid var(--SmartThemeBorderColor, #555); padding-bottom: 10px; margin-bottom: 10px; flex-wrap: wrap; gap: 5px; padding-right: 25px; }
+            .cs-modal-header { display: flex; justify-content: space-between; align-items: center; font-weight: bold; font-size: 1.2em; border-bottom: 1px solid var(--SmartThemeBorderColor, #555); padding-bottom: 10px; margin-bottom: 10px; flex-wrap: wrap; gap: 8px; }
             .cs-history-chat { margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; overflow: hidden; }
             .cs-history-chat-title { background: rgba(0,0,0,0.2); padding: 10px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 5px;}
             .cs-history-chat-title:hover { background: rgba(0,0,0,0.4); }
@@ -255,14 +253,19 @@ import {
         modalOverlay.id = 'cs_history_modal';
         modalOverlay.className = 'cs-modal-overlay';
         
+        // Tap outside to close
+        modalOverlay.onclick = (e) => {
+            if (e.target === modalOverlay) modalOverlay.remove();
+        };
+        
         let html = `
             <div class="cs-modal">
-                <i id="cs_hist_close" class="fa-solid fa-xmark cs-modal-close-btn" title="Close"></i>
                 <div class="cs-modal-header">
                     <span><i class="fa-solid fa-clock-rotate-left"></i> Choice History</span>
                     <div style="display:flex; gap: 8px; flex-wrap: wrap;">
                         <button id="cs_hist_download" class="menu_button interactable margin0" title="Export Log to Downloads Folder"><i class="fa-solid fa-download"></i> Log</button>
                         <button id="cs_hist_clearall" class="menu_button interactable margin0" style="color: #ef4444;"><i class="fa-solid fa-trash"></i> All</button>
+                        <button id="cs_hist_close" class="menu_button interactable margin0"><i class="fa-solid fa-xmark"></i> Close</button>
                     </div>
                 </div>
                 <div class="cs-modal-body" style="display:flex; flex-direction:column; gap: 10px;">
@@ -385,13 +388,18 @@ import {
         modalOverlay.id = 'cs_failed_modal';
         modalOverlay.className = 'cs-modal-overlay';
         
+        // Tap outside to close
+        modalOverlay.onclick = (e) => {
+            if (e.target === modalOverlay) modalOverlay.remove();
+        };
+        
         let html = `
             <div class="cs-modal">
-                <i id="cs_fail_close" class="fa-solid fa-xmark cs-modal-close-btn" title="Close"></i>
                 <div class="cs-modal-header">
                     <span><i class="fa-solid fa-triangle-exclamation"></i> Failed Parses</span>
-                    <div style="display:flex; gap: 8px;">
+                    <div style="display:flex; gap: 8px; flex-wrap: wrap;">
                         <button id="cs_fail_clearall" class="menu_button interactable margin0" style="color: #ef4444;"><i class="fa-solid fa-trash"></i> All</button>
+                        <button id="cs_fail_close" class="menu_button interactable margin0"><i class="fa-solid fa-xmark"></i> Close</button>
                     </div>
                 </div>
                 <div class="cs-modal-body" style="display:flex; flex-direction:column; gap: 10px;">
