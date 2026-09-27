@@ -7,6 +7,8 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 settings.json
+choices_database.jsonl
+choices_db.jsonl
 TODO.txt
 
 _bkup

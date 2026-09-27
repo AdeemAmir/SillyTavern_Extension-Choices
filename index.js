@@ -44,10 +44,20 @@ import {
         position: "bottom",
         offset_top: 10,
         offset_bottom: 50,
-        widget_left: '40%',
-        widget_top: '40%',
-        widget_bottom: '',
+        
+        // Data Logging Toggles
+        store_ai_context: true,
+        store_summary: true,
+        store_user_style: true,
+        store_full_prompt: true,
+        store_raw_response: true,
+        
+        // Resizing Toggles
         widget_width: 90, 
+        choice_block_max_height: 40,
+        modal_width: 95,
+        modal_height: 90,
+
         userStyleTemplate: defaultPrompts.userStyleTemplate,
         instructionPrompt: defaultPrompts.instructionPrompt,
         matrix: JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix))
@@ -59,54 +69,6 @@ import {
     let wasInterrupted = false;
     let DOM_textarea = null; 
     let formObserver = null;
-    
-    // --- DATABASE INTEGRATION (IndexedDB for limitless storage) ---
-    const dbName = "ST_ChoiceStream_DB";
-    let db = null;
-
-    function initDB() {
-        return new Promise((resolve, reject) => {
-            const request = indexedDB.open(dbName, 1);
-            request.onupgradeneeded = (e) => {
-                let tempDb = e.target.result;
-                if (!tempDb.objectStoreNames.contains("history")) {
-                    tempDb.createObjectStore("history", { keyPath: "id", autoIncrement: true });
-                }
-                if (!tempDb.objectStoreNames.contains("fails")) {
-                    tempDb.createObjectStore("fails", { keyPath: "id", autoIncrement: true });
-                }
-            };
-            request.onsuccess = (e) => { db = e.target.result; resolve(); };
-            request.onerror = (e) => { log("IndexedDB Error: " + e.target.error, 1); reject(); };
-        });
-    }
-
-    function dbAdd(storeName, data) {
-        if (!db) return;
-        const tx = db.transaction(storeName, "readwrite");
-        tx.objectStore(storeName).add(data);
-    }
-
-    function dbGetAll(storeName) {
-        return new Promise((resolve) => {
-            if (!db) return resolve([]);
-            const tx = db.transaction(storeName, "readonly");
-            const req = tx.objectStore(storeName).getAll();
-            req.onsuccess = () => resolve(req.result || []);
-        });
-    }
-
-    function dbDelete(storeName, id) {
-        if (!db) return;
-        const tx = db.transaction(storeName, "readwrite");
-        tx.objectStore(storeName).delete(id);
-    }
-
-    function dbClear(storeName) {
-        if (!db) return;
-        const tx = db.transaction(storeName, "readwrite");
-        tx.objectStore(storeName).clear();
-    }
 
     function log(text, level = 1) {
         if (settings.debugMode >= level) {
@@ -118,19 +80,8 @@ import {
         if (context.extensionSettings[MODULE_NAME]) {
             settings = Object.assign(settings, context.extensionSettings[MODULE_NAME]);
             
-            // Legacy Migration to IndexedDB (prevent settings.json bloat)
+            // Legacy Cleanup
             if (settings.choiceHistory || settings.failedParses || settings.foreverLogText) {
-                log("Migrating old JSON storage to IndexedDB...", 1);
-                
-                if (settings.choiceHistory) {
-                    for (const chat in settings.choiceHistory) {
-                        settings.choiceHistory[chat].forEach(c => dbAdd("history", { chatName: chat, ...c }));
-                    }
-                }
-                if (settings.failedParses) {
-                    settings.failedParses.forEach(f => dbAdd("fails", f));
-                }
-
                 delete settings.choiceHistory;
                 delete settings.failedParses;
                 delete settings.foreverLogText;
@@ -141,11 +92,27 @@ import {
         if (!settings.instructionPrompt) settings.instructionPrompt = defaultPrompts.instructionPrompt;
         if (!settings.userStyleTemplate) settings.userStyleTemplate = defaultPrompts.userStyleTemplate;
         if (!settings.matrix) settings.matrix = JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix));
-        if (!settings.widget_left) settings.widget_left = '40%';
-        if (!settings.widget_top && !settings.widget_bottom) settings.widget_top = '40%';
-        if (settings.widget_width === undefined) settings.widget_width = 90;
         
+        // Setup Defaults for new properties
+        if (settings.widget_width === undefined) settings.widget_width = 90;
+        if (settings.choice_block_max_height === undefined) settings.choice_block_max_height = 40;
+        if (settings.modal_width === undefined) settings.modal_width = 95;
+        if (settings.modal_height === undefined) settings.modal_height = 90;
+        
+        if (settings.store_ai_context === undefined) settings.store_ai_context = true;
+        if (settings.store_summary === undefined) settings.store_summary = true;
+        if (settings.store_user_style === undefined) settings.store_user_style = true;
+        if (settings.store_full_prompt === undefined) settings.store_full_prompt = true;
+        if (settings.store_raw_response === undefined) settings.store_raw_response = true;
+        
+        applyDynamicCSSVars();
+    }
+
+    function applyDynamicCSSVars() {
         document.documentElement.style.setProperty('--cs-panel-width', `${settings.widget_width}vw`);
+        document.documentElement.style.setProperty('--cs-modal-width', `${settings.modal_width}vw`);
+        document.documentElement.style.setProperty('--cs-modal-height', `${settings.modal_height}vh`);
+        document.documentElement.style.setProperty('--cs-choices-height', `${settings.choice_block_max_height}vh`);
     }
 
     function injectCSS() {
@@ -154,7 +121,7 @@ import {
         style.id = 'cs_custom_css';
         style.innerHTML = `
             .cs-modal-overlay { position: fixed; inset: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); z-index: 999999; display: flex; justify-content: center; align-items: center; padding: 12px; box-sizing: border-box; touch-action: pan-y; backdrop-filter: blur(4px); }
-            .cs-modal { position: relative; background: var(--SmartThemeBlurTintColor, #1e1e2e); border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 10px; width: 100%; max-width: 680px; height: 90vh; max-height: 850px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.9); color: var(--SmartThemeBodyColor, #fff); }
+            .cs-modal { position: relative; background: var(--SmartThemeBlurTintColor, #1e1e2e); border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 10px; width: var(--cs-modal-width, 95vw); max-width: 1400px; height: var(--cs-modal-height, 90vh); display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.9); color: var(--SmartThemeBodyColor, #fff); }
             .cs-modal-header { flex: 0 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--SmartThemeBorderColor, #444); background: rgba(0,0,0,0.25); gap: 8px; flex-wrap: wrap; }
             .cs-modal-body { flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
             .cs-modal-footer { flex: 0 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-top: 1px solid var(--SmartThemeBorderColor, #444); background: rgba(0,0,0,0.25); gap: 10px; }
@@ -176,6 +143,8 @@ import {
             #cs_widget_input { flex: 1 1 auto !important; min-width: 0 !important; }
             .cs_widget_action { flex: 0 0 auto !important; }
             .cs-widget-extra-btn { width: 35px !important; }
+            
+            .choice-stream-box { max-height: var(--cs-choices-height, 40vh); overflow-y: auto; }
         `;
         document.head.appendChild(style);
     }
@@ -204,8 +173,7 @@ import {
     }
 
     async function init() {
-        log("Booting Concurrency-Locked Matrix Engine...", 1);
-        await initDB();
+        log("Booting Choice Stream System...", 1);
         await loadSettings();
         injectCSS();
         
@@ -264,7 +232,20 @@ import {
         });
     }
 
-    // --- LOGGING & DATASET PREPARATION ---
+    // --- IDENTIFICATION LOGIC ---
+    function getCurrentChatId() {
+        return context.chatId || "Unknown_Chat_File";
+    }
+
+    function getCurrentChatName() {
+        let name = "Unknown Chat";
+        if (context.characters && context.characters.length > 0 && context.characterId !== undefined) {
+            name = context.characters[context.characterId]?.name || context.name2;
+        } else if (context.name2) {
+            name = context.name2;
+        }
+        return name || "Group/Unknown Chat";
+    }
 
     function extractAIResponseContext() {
         const chat = context.chat;
@@ -277,33 +258,51 @@ import {
         return "No AI message found.";
     }
 
-    function saveToHistory(choices, customDirection, storySummary, userStyleText) {
-        const chatName = context.chatId || context.name2 || "Unknown_Chat";
-        const aiResponse = extractAIResponseContext();
-        
-        const dataPayload = {
-            timestamp: Date.now(),
-            chatName,
-            aiContext: aiResponse,
-            summary: storySummary || "",
-            userStyle: userStyleText || "",
-            direction: (customDirection || "").trim(),
-            choices: choices
-        };
-        
-        dbAdd("history", dataPayload);
+    // --- UNIFIED SERVER.JS API HOOKS ---
+    
+    async function apiGetDB() {
+        try {
+            const res = await fetch('/api/extensions/st_choice_stream/db');
+            if (!res.ok) throw new Error("Server response not OK");
+            return await res.json();
+        } catch (e) {
+            log("API Fetch Error (Is server.js installed?): " + e.message, 1);
+            return [];
+        }
     }
 
-    function saveFailedParse(rawText) {
-        const chatName = context.chatId || context.name2 || "Unknown_Chat";
-        dbAdd("fails", { timestamp: Date.now(), chatName, rawText });
+    async function apiLogEvent(payload) {
+        try {
+            await fetch('/api/extensions/st_choice_stream/log', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+        } catch (e) {
+            log("API Log Error: " + e.message, 1);
+        }
+    }
+
+    async function apiDeleteRecord(global_id) {
+        try {
+            await fetch('/api/extensions/st_choice_stream/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ global_id: Number(global_id) })
+            });
+        } catch (e) {}
+    }
+
+    async function apiClearDB() {
+        try {
+            await fetch('/api/extensions/st_choice_stream/clear', { method: 'POST' });
+        } catch (e) {}
     }
 
     async function downloadDatasetJSON() {
-        const logs = await dbGetAll("history");
+        const logs = await apiGetDB();
         if (logs.length === 0) return alert("No log data available to download.");
         
-        // Formats the DB array beautifully for easy external AI data-processing
         const blob = new Blob([JSON.stringify(logs, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -339,31 +338,38 @@ import {
         modalOverlay.id = 'cs_history_modal';
         modalOverlay.className = 'cs-modal-overlay';
         
-        const currentChat = context.chatId || context.name2 || "Unknown_Chat";
-        const allClusters = await dbGetAll("history");
+        const currentChatId = getCurrentChatId();
+        let allRecords = await apiGetDB();
         
+        // Filter purely for successes to show in the choices list
+        let allClusters = allRecords.filter(r => r.status === "SUCCESS");
         allClusters.sort((a,b) => b.timestamp - a.timestamp);
         
-        const chatKeys = [...new Set(allClusters.map(c => c.chatName))];
+        const chatKeysMap = {};
+        allClusters.forEach(c => chatKeysMap[c.chat_id] = c.chat_name);
 
         let filtered = allClusters;
         if (filterChat !== "__ALL__") {
-            filtered = filtered.filter(c => c.chatName === filterChat);
+            filtered = filtered.filter(c => c.chat_id === filterChat);
         }
         if (searchKeyword.trim() !== "") {
             const kw = searchKeyword.toLowerCase();
             filtered = filtered.filter(c => 
-                c.chatName.toLowerCase().includes(kw) || 
+                c.chat_name.toLowerCase().includes(kw) || 
                 c.choices.some(choice => choice.toLowerCase().includes(kw)) ||
-                (c.direction && c.direction.toLowerCase().includes(kw))
+                (c.custom_direction && c.custom_direction.toLowerCase().includes(kw)) ||
+                (c.ai_context && c.ai_context.toLowerCase().includes(kw))
             );
         }
 
         let chatOptionsHtml = `<option value="__ALL__" ${filterChat === '__ALL__' ? 'selected' : ''}>All Chats (${allClusters.length} total saves)</option>`;
-        chatKeys.sort((a,b) => a === currentChat ? -1 : (b === currentChat ? 1 : a.localeCompare(b))).forEach(chat => {
-            const isCurr = chat === currentChat ? '★ [Current] ' : '';
-            const count = allClusters.filter(c => c.chatName === chat).length;
-            chatOptionsHtml += `<option value="${chat}" ${filterChat === chat ? 'selected' : ''}>${isCurr}${chat} (${count})</option>`;
+        
+        const chatKeysArr = Object.keys(chatKeysMap).sort((a,b) => a === currentChatId ? -1 : (b === currentChatId ? 1 : chatKeysMap[a].localeCompare(chatKeysMap[b])));
+        
+        chatKeysArr.forEach(chatId => {
+            const isCurr = chatId === currentChatId ? '★ [Current] ' : '';
+            const count = allClusters.filter(c => c.chat_id === chatId).length;
+            chatOptionsHtml += `<option value="${chatId}" ${filterChat === chatId ? 'selected' : ''}>${isCurr}${chatKeysMap[chatId]} (${count})</option>`;
         });
 
         let bodyHtml = "";
@@ -371,26 +377,26 @@ import {
             bodyHtml = `<div style="text-align:center; padding: 40px 10px; color: rgba(255,255,255,0.4);">No saved choice history matches the criteria.</div>`;
         } else {
             filtered.forEach(cluster => {
-                const dateStr = new Date(cluster.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' ' + new Date(cluster.timestamp).toLocaleDateString();
                 const totalWords = cluster.choices.reduce((acc, c) => acc + (c.trim() ? c.trim().split(/\s+/).length : 0), 0);
                 const totalChars = cluster.choices.reduce((acc, c) => acc + c.length, 0);
                 const estTokens = Math.round(totalWords * 1.3);
 
                 bodyHtml += `
-                    <div class="cs-history-cluster" data-id="${cluster.id}">
+                    <div class="cs-history-cluster" data-id="${cluster.global_id}">
                         <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:6px;">
                             <div style="display:flex; flex-direction:column; gap:4px;">
                                 <div style="font-weight:bold; font-size:0.95rem; color:#a78bfa;">
-                                    ${cluster.chatName} 
-                                    ${cluster.chatName === currentChat ? '<span style="color:#10b981; font-size:0.75rem; font-weight:normal;">(Active Chat)</span>' : ''}
+                                    ${cluster.chat_name} 
+                                    ${cluster.chat_id === currentChatId ? '<span style="color:#10b981; font-size:0.75rem; font-weight:normal;">(Active Chat)</span>' : ''}
                                 </div>
                                 <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                                    <span class="cs-stat-pill"><i class="fa-solid fa-clock"></i> ${dateStr}</span>
+                                    <span class="cs-stat-pill" title="Global DB ID">ID: ${cluster.global_id}</span>
+                                    <span class="cs-stat-pill" title="Chat-Specific Generation ID">Chat#: ${cluster.chat_num}</span>
+                                    <span class="cs-stat-pill"><i class="fa-solid fa-clock"></i> ${cluster.datetime}</span>
                                     <span class="cs-stat-pill" style="color:#38bdf8;"><i class="fa-solid fa-list-ol"></i> ${cluster.choices.length} options</span>
                                     <span class="cs-stat-pill"><i class="fa-solid fa-font"></i> ${totalWords}w / ${totalChars}c</span>
-                                    <span class="cs-stat-pill" style="color:#fbbf24;"><i class="fa-solid fa-microchip"></i> ~${estTokens} tok</span>
                                 </div>
-                                ${cluster.direction ? `<div style="font-size:0.8rem; color:#f472b6;"><b>Prompt:</b> "${cluster.direction}"</div>` : ''}
+                                ${cluster.custom_direction ? `<div style="font-size:0.8rem; color:#f472b6;"><b>Prompt:</b> "${cluster.custom_direction}"</div>` : ''}
                             </div>
                             <div style="display:flex; gap:8px;">
                                 <button class="menu_button cs-touch-btn cs-load-cluster-btn margin0" style="padding:4px 8px; font-size:0.8rem; color:#10b981;" title="Load into choices UI"><i class="fa-solid fa-arrow-up-right-from-square"></i> Use</button>
@@ -398,19 +404,26 @@ import {
                             </div>
                         </div>
 
+                        ${cluster.ai_context ? `
+                        <div style="font-size: 0.82rem; color: #cbd5e1; margin-top: 6px; margin-bottom: 6px; font-style: italic; border-left: 2px solid #64748b; padding-left: 6px;">
+                            ${cluster.ai_context.substring(0, 150)}${cluster.ai_context.length > 150 ? '...' : ''}
+                        </div>` : ''}
+
                         <div class="cs-cluster-preview" style="font-size:0.88rem; opacity:0.85; cursor:pointer;">
                             ${cluster.choices.map((c, i) => `<div><span style="color:#8b5cf6;">[${i+1}]</span> ${c.substring(0, 110)}...</div>`).join('')}
                         </div>
 
                         <div class="cs-toggle-inspect" style="font-size:0.8rem; color:#8b5cf6; cursor:pointer; text-decoration:underline;">
-                            <i class="fa-solid fa-chevron-down"></i> Inspect Full Options & AI Context
+                            <i class="fa-solid fa-chevron-down"></i> Inspect Full Options & Context
                         </div>
 
                         <div class="cs-cluster-details">
+                            ${cluster.ai_context ? `
                             <div style="font-size:0.8rem; background:rgba(0,0,0,0.3); padding:8px; border-radius:4px; border-left:3px solid #8b5cf6;">
                                 <b style="color:#a78bfa;">AI Context Snippet:</b>
-                                <div style="margin-top:4px; max-height:80px; overflow-y:auto; opacity:0.85;">${(cluster.aiContext || "").replace(/</g, '&lt;')}</div>
-                            </div>
+                                <div style="margin-top:4px; max-height:80px; overflow-y:auto; opacity:0.85;">${cluster.ai_context.replace(/</g, '&lt;')}</div>
+                            </div>` : ''}
+                            
                             ${cluster.choices.map((c, i) => {
                                 const w = c.trim().split(/\s+/).length;
                                 return `
@@ -435,7 +448,7 @@ import {
         modalOverlay.innerHTML = `
             <div class="cs-modal">
                 <div class="cs-modal-header">
-                    <span style="font-size:1.1rem;"><i class="fa-solid fa-clock-rotate-left"></i> Choice History Database</span>
+                    <span style="font-size:1.1rem;"><i class="fa-solid fa-clock-rotate-left"></i> Unified Choice Database</span>
                     <div style="display:flex; gap:8px;">
                         <button id="cs_hist_download_btn" class="menu_button cs-touch-btn margin0" title="Export Dataset to JSON"><i class="fa-solid fa-file-export"></i> Dataset</button>
                         <button id="cs_hist_clearall_btn" class="menu_button cs-touch-btn margin0" style="color:#ef4444;"><i class="fa-solid fa-trash"></i> Wipe DB</button>
@@ -453,7 +466,7 @@ import {
                 <div class="cs-modal-body">${bodyHtml}</div>
 
                 <div class="cs-modal-footer">
-                    <div style="font-size:0.85rem; color:#94a3b8;">Showing <b>${filtered.length}</b> of <b>${allClusters.length}</b> records</div>
+                    <div style="font-size:0.85rem; color:#94a3b8;">Showing <b>${filtered.length}</b> of <b>${allClusters.length}</b> generated clusters</div>
                     <button id="cs_hist_foot_close" class="menu_button cs-touch-btn margin0" style="min-width:100px; font-weight:bold;"><i class="fa-solid fa-check"></i> Close</button>
                 </div>
             </div>
@@ -491,17 +504,17 @@ import {
             btn.onclick = () => {
                 const parent = btn.closest('.cs-history-cluster');
                 const id = Number(parent.getAttribute('data-id'));
-                const cluster = filtered.find(c => c.id === id);
+                const cluster = filtered.find(c => c.global_id === id);
                 if (cluster) renderChoices(cluster.choices);
                 closeModal();
             };
         });
 
         modalOverlay.querySelectorAll('.cs-del-cluster-btn').forEach(btn => {
-            btn.onclick = () => {
+            btn.onclick = async () => {
                 const parent = btn.closest('.cs-history-cluster');
                 const id = Number(parent.getAttribute('data-id'));
-                dbDelete("history", id);
+                await apiDeleteRecord(id);
                 showHistoryModal($('#cs_hist_chat_select').val(), $('#cs_hist_search_input').val());
             };
         });
@@ -533,9 +546,9 @@ import {
         });
 
         document.getElementById('cs_hist_download_btn').onclick = downloadDatasetJSON;
-        document.getElementById('cs_hist_clearall_btn').onclick = () => {
-            if (confirm("Permanently clear ALL choice history across all chats?")) {
-                dbClear("history");
+        document.getElementById('cs_hist_clearall_btn').onclick = async () => {
+            if (confirm("Permanently clear ALL history across all chats? This deletes your local DB file contents.")) {
+                await apiClearDB();
                 showHistoryModal();
             }
         };
@@ -548,7 +561,8 @@ import {
         modalOverlay.id = 'cs_failed_modal';
         modalOverlay.className = 'cs-modal-overlay';
         
-        const fails = await dbGetAll("fails");
+        let allRecords = await apiGetDB();
+        const fails = allRecords.filter(r => r.status === "FAIL");
         fails.sort((a,b) => b.timestamp - a.timestamp);
 
         let bodyHtml = "";
@@ -556,24 +570,30 @@ import {
             bodyHtml = `<div style="text-align:center; padding: 40px 10px; color: rgba(255,255,255,0.4);">No unparsed LLM responses recorded. Everything is parsing smoothly!</div>`;
         } else {
             fails.forEach(fail => {
-                const dateStr = new Date(fail.timestamp).toLocaleString();
-                const wordCount = fail.rawText.trim().split(/\s+/).length;
+                const wordCount = (fail.raw_response || "").trim().split(/\s+/).length;
                 bodyHtml += `
                     <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.07); border-radius:6px; padding:10px;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
                             <div>
-                                <b style="color:#ef4444;">${fail.chatName}</b>
-                                <div style="display:flex; gap:6px; margin-top:3px;">
-                                    <span class="cs-stat-pill">${dateStr}</span>
-                                    <span class="cs-stat-pill">${wordCount} words / ${fail.rawText.length} chars</span>
+                                <b style="color:#ef4444;">${fail.chat_name}</b>
+                                <div style="display:flex; gap:6px; margin-top:3px; flex-wrap:wrap;">
+                                    <span class="cs-stat-pill" title="Global DB ID">ID: ${fail.global_id}</span>
+                                    <span class="cs-stat-pill">${fail.datetime}</span>
+                                    <span class="cs-stat-pill">${wordCount} words / ${(fail.raw_response || "").length} chars</span>
                                 </div>
                             </div>
                             <div style="display:flex; gap:8px;">
-                                <button class="menu_button cs-touch-btn cs-fail-copy-btn margin0" data-text="${encodeURIComponent(fail.rawText)}"><i class="fa-solid fa-copy"></i> Copy</button>
-                                <button class="menu_button cs-touch-btn cs-fail-del-btn margin0" data-id="${fail.id}" style="color:#ef4444;"><i class="fa-solid fa-trash"></i></button>
+                                <button class="menu_button cs-touch-btn cs-fail-copy-btn margin0" data-text="${encodeURIComponent(fail.raw_response || '')}"><i class="fa-solid fa-copy"></i> Copy Raw</button>
+                                <button class="menu_button cs-touch-btn cs-fail-del-btn margin0" data-id="${fail.global_id}" style="color:#ef4444;"><i class="fa-solid fa-trash"></i></button>
                             </div>
                         </div>
-                        <div class="cs-failed-item">${fail.rawText.replace(/</g, '&lt;')}</div>
+
+                        ${fail.ai_context ? `
+                        <div style="font-size: 0.82rem; color: #cbd5e1; margin-bottom: 8px; font-style: italic; border-left: 2px solid #ef4444; padding-left: 6px;">
+                            <b>Failed context snippet:</b> "${fail.ai_context.substring(0, 150)}${fail.ai_context.length > 150 ? '...' : ''}"
+                        </div>` : ''}
+
+                        <div class="cs-failed-item">${(fail.raw_response || "").replace(/</g, '&lt;')}</div>
                     </div>
                 `;
             });
@@ -584,7 +604,6 @@ import {
                 <div class="cs-modal-header">
                     <span style="font-size:1.1rem;"><i class="fa-solid fa-triangle-exclamation" style="color:#ef4444;"></i> Unparsed Raw Responses (${fails.length})</span>
                     <div style="display:flex; gap:8px;">
-                        <button id="cs_fail_clearall_btn" class="menu_button cs-touch-btn margin0" style="color:#ef4444;"><i class="fa-solid fa-trash"></i> Clear All</button>
                         <button id="cs_fail_head_close" class="menu_button cs-touch-btn margin0" style="background:rgba(239,68,68,0.2);"><i class="fa-solid fa-xmark"></i> Close</button>
                     </div>
                 </div>
@@ -617,19 +636,12 @@ import {
         });
 
         modalOverlay.querySelectorAll('.cs-fail-del-btn').forEach(btn => {
-            btn.onclick = () => {
+            btn.onclick = async () => {
                 const id = Number(btn.getAttribute('data-id'));
-                dbDelete("fails", id);
+                await apiDeleteRecord(id);
                 showFailedModal();
             };
         });
-
-        document.getElementById('cs_fail_clearall_btn').onclick = () => {
-            if (confirm("Delete all failed parse records?")) {
-                dbClear("fails");
-                showFailedModal();
-            }
-        };
     }
 
     function buildFloatingWidget() {
@@ -890,22 +902,76 @@ import {
         const storySummary = extractStorySummary();
         const userStyle = buildUserStyleProfile();
         const dynamicMatrix = buildMatrixPrompt(false);
+        let compiledPrompt = "";
+        let rawResponse = "";
+        let choices = [];
+        let isSuccess = false;
         
         try {
             log(`Fetching ${settings.numOptions} choices from Native backend...`, 1);
-            const choices = await executeWithRetry(() => fetchChoices(storySummary, userStyle, dynamicMatrix, customDirection), 1, 3000);
+            
+            let safeUserName = context.name2 || "The Player";
+            if (safeUserName === "SillyTavern System" || safeUserName === "System") safeUserName = "The Player";
+
+            let stInstruction = settings.instructionPrompt
+                .replaceAll("{{numOptions}}", settings.numOptions)
+                .replaceAll("{{style_block}}", userStyleText)
+                .replaceAll("{{matrix_block}}", dynamicMatrix)
+                .replaceAll("{{user}}", safeUserName);
+
+            if (customDirection && customDirection.trim() !== "") {
+                const dirPrompt = `\n=====\nTARGET NARRATIVE DIRECTION\nALL choices MUST strictly execute or revolve around this specific intent: "${customDirection.trim()}"\nDO NOT deviate from this core premise!\n=====\n`;
+                if (stInstruction.includes("CRITICAL RULES")) {
+                    stInstruction = stInstruction.replace("CRITICAL RULES", `${dirPrompt}\nCRITICAL RULES`);
+                } else {
+                    if (stInstruction.endsWith("]")) stInstruction = stInstruction.slice(0, -1) + `\n${dirPrompt}]`;
+                    else stInstruction += `\n${dirPrompt}`;
+                }
+            }
+
+            compiledPrompt = storySummary ? `${storySummary}\n\n${stInstruction}` : stInstruction;
+            
+            rawResponse = await executeWithRetry(() => fetchRaw(compiledPrompt), 1, 3000);
+            choices = parseLLMArray(rawResponse);
             
             if (choices && choices.length > 0) {
+                isSuccess = true;
                 renderChoices(choices);
-                try { saveToHistory(choices, customDirection, storySummary, userStyle); } 
-                catch (err) { log("Failed to database history: " + err.message, 1); }
+            } else {
+                throw new Error("Failed to parse choices from response");
             }
         } catch (e) { 
-            log("Fetch failed completely: " + e.message, 1); 
+            log("Fetch/Parse failed: " + e.message, 1); 
         } finally {
             isGenerating = false;
             if (goBtnIcon) goBtnIcon.className = "fa-solid fa-play";
+            
+            // Generate DB Payload unified for both Pass and Fail
+            const payload = {
+                datetime: new Date().toLocaleString(),
+                timestamp: Date.now(),
+                chat_id: getCurrentChatId(),
+                chat_name: getCurrentChatName(),
+                status: isSuccess ? "SUCCESS" : "FAIL",
+                ai_context: settings.store_ai_context ? extractAIResponseContext() : "",
+                story_summary: settings.store_summary ? storySummary : "",
+                user_style: settings.store_user_style ? userStyleText : "",
+                custom_direction: customDirection.trim(),
+                full_prompt: settings.store_full_prompt ? compiledPrompt : "",
+                raw_response: settings.store_raw_response ? rawResponse : "",
+                choices: isSuccess ? choices : []
+            };
+
+            if (rawResponse) apiLogEvent(payload);
         }
+    }
+
+    async function fetchRaw(compiledPrompt) {
+        log(`SENDING QUIET PROMPT:\n${compiledPrompt}`, 2);
+        let rawResponse = await generateQuietPrompt({ quietPrompt: compiledPrompt, skipWIAN: false, removeReasoning: true });
+        if (!rawResponse || rawResponse.trim() === "") throw new Error("Empty response from ST Proxy");
+        log(`RAW LLM RESPONSE:\n${rawResponse}`, 2);
+        return rawResponse;
     }
 
     async function executeWithRetry(fn, maxRetries, delayMs) {
@@ -936,21 +1002,17 @@ import {
         return s.trim();
     }
 
-    // --- AGGRESSIVE PARSER IMPLEMENTATION ---
     function parseLLMArray(rawText) {
         let cleanText = rawText.trim();
         let choices = [];
 
-        // 1. ISOLATE TARGET BLOCK: Slice off LLM fluff like "Here are your choices: ```json"
         let firstBracket = cleanText.indexOf('[');
         let lastBracket = cleanText.lastIndexOf(']');
         let jsonStr = cleanText;
-        
         if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
             jsonStr = cleanText.substring(firstBracket, lastBracket + 1);
         }
 
-        // 2. NATIVE PARSE (Happy Path)
         try {
             let parseableStr = jsonStr.replace(/```(?:json)?|```/gi, '').trim();
             parseableStr = parseableStr.replace(/,\s*([\]}])/g, '$1'); 
@@ -969,7 +1031,6 @@ import {
             log("Native JSON.parse failed, falling back to Regex extraction...", 2);
         }
 
-        // 3. REGEX FALLBACK (Standard broken JSON)
         const choiceRegex = /"choice"\s*:\s*"([\s\S]*?)"(?=\s*(?:,|$}|\n|\}))/gi;
         let match;
         while ((match = choiceRegex.exec(jsonStr)) !== null) {
@@ -979,23 +1040,18 @@ import {
 
         if (choices.length > 0) return choices;
 
-        // 4. AGGRESSIVE BRACKET EXTRACTION: The [ {"choice": "R...},{ off-hours...\""} ] scenario.
-        // It slices the text into `{...}` chunks and blindly extracts the longest inner string, ignoring formatting errors.
         log("Activating Aggressive Bracket Extraction...", 2);
         let blocks = jsonStr.match(/\{([\s\S]*?)\}/g);
         if (blocks) {
             for (let b of blocks) {
-                // Strip the outer braces and the "choice": key if the LLM attempted it.
                 let content = b.replace(/^\{\s*(?:"choice"\s*:\s*)?/, '').replace(/\s*\}$/, '');
                 content = sanitizeOption(content);
-                // If the extracted text is substantial enough to be a narrative option, keep it.
                 if (content.length > 10) choices.push(content);
             }
         }
 
         if (choices.length > 0) return choices;
 
-        // 5. FINAL LINE-BY-LINE (Complete structural failure)
         for (let line of cleanText.split('\n')) {
             let trimmed = line.trim();
             if (REGEX_FALLBACK_LIST.test(trimmed)) {
@@ -1005,51 +1061,6 @@ import {
         }
 
         return choices.length > 0 ? choices : null;
-    }
-
-    async function fetchChoices(storySummary, userStyleText, dynamicMatrix, customDirection) {
-        let safeUserName = context.name2 || "The Player";
-        if (safeUserName === "SillyTavern System" || safeUserName === "System") safeUserName = "The Player";
-
-        let stInstruction = settings.instructionPrompt
-            .replaceAll("{{numOptions}}", settings.numOptions)
-            .replaceAll("{{style_block}}", userStyleText)
-            .replaceAll("{{matrix_block}}", dynamicMatrix)
-            .replaceAll("{{user}}", safeUserName);
-
-        if (customDirection && customDirection.trim() !== "") {
-            const dirPrompt = `\n=====\nTARGET NARRATIVE DIRECTION\nALL choices MUST strictly execute or revolve around this specific intent: "${customDirection.trim()}"\nDO NOT deviate from this core premise!\n=====\n`;
-    
-            if (stInstruction.includes("CRITICAL RULES")) {
-                stInstruction = stInstruction.replace("CRITICAL RULES", `${dirPrompt}\nCRITICAL RULES`);
-            } else {
-                if (stInstruction.endsWith("]")) {
-                    stInstruction = stInstruction.slice(0, -1) + `\n${dirPrompt}]`;
-                } else {
-                    stInstruction += `\n${dirPrompt}`;
-                }
-            }
-        }
-
-        const compiledPrompt = storySummary ? `${storySummary}\n\n${stInstruction}` : stInstruction;
-        log(`SENDING QUIET PROMPT:\n${compiledPrompt}`, 2);
-        
-        let rawResponse = await generateQuietPrompt({ quietPrompt: compiledPrompt, skipWIAN: false, removeReasoning: true });
-        
-        if (!rawResponse || rawResponse.trim() === "") {
-            saveFailedParse("Empty API Response");
-            throw new Error("Empty response from ST Proxy");
-        }
-        
-        log(`RAW LLM RESPONSE:\n${rawResponse}`, 2);
-        const choices = parseLLMArray(rawResponse);
-        
-        if (!choices || choices.length === 0) {
-            saveFailedParse(rawResponse);
-            throw new Error("Failed to parse choices from response");
-        }
-        
-        return choices;
     }
 
     function renderChoices(choices) {
@@ -1192,37 +1203,68 @@ import {
                         <div class="inline-drawer-icon fa-solid interactable down fa-circle-chevron-down" tabindex="0" role="button"></div>
                     </div>
                     <div class="cs-drawer-content" style="display: none; padding-top: 10px;">
-                        <label class="checkbox_label flex-container marginBot5">
-                            <input type="checkbox" id="cs_active" ${settings.enabled ? "checked" : ""}>
-                            <span>Auto-generate Choices</span>
-                        </label>
-                        <label class="checkbox_label flex-container marginBot5">
-                            <input type="checkbox" id="cs_skip_interrupt" ${settings.skipInterrupted ? "checked" : ""}>
-                            <span>Skip on Interrupted Generation</span>
-                        </label>
                         
-                        <hr>
-                        <h4>Context Integration</h4>
-                        <label class="checkbox_label flex-container marginBot5" title="Inject ST's running summary into the choice generator.">
-                            <input type="checkbox" id="cs_include_summary" ${settings.includeSummary ? "checked" : ""}>
-                            <span>Include Lore Summaries</span>
-                        </label>
-                        <label class="checkbox_label flex-container marginBot5" title="Extract past messages to teach the LLM your writing style.">
-                            <input type="checkbox" id="cs_use_user_style" ${settings.useUserStyle ? "checked" : ""}>
-                            <span>Enable User Style Profiler</span>
-                        </label>
-                        <label class="checkbox_label flex-container marginBot5" title="Automatically structure options using the matrix below.">
-                            <input type="checkbox" id="cs_dynamic_matrix" ${settings.dynamicMatrix ? "checked" : ""}>
-                            <span>Use Dynamic Tone Matrix</span>
-                        </label>
-
-                        <div class="flex-container alignitemscenter marginBot5 justifySpaceBetween marginTop5" style="border-bottom: 1px solid var(--SmartThemeBorderColor); padding-bottom: 5px;">
-                            <h4 class="margin0">Prompts & Matrix</h4>
-                            <div id="cs_reset_prompts" class="menu_button interactable cs-touch-btn margin0" tabindex="0" role="button" title="Restore Default Prompts">
-                                <i class="fa-solid fa-rotate-left"></i> Restore Default Prompts
-                            </div>
+                        <div class="flex-container marginBot5 justifySpaceBetween">
+                            <label class="checkbox_label flex-container">
+                                <input type="checkbox" id="cs_active" ${settings.enabled ? "checked" : ""}>
+                                <span>Auto-generate Choices</span>
+                            </label>
+                            <label class="checkbox_label flex-container">
+                                <input type="checkbox" id="cs_skip_interrupt" ${settings.skipInterrupted ? "checked" : ""}>
+                                <span>Skip on Interrupt</span>
+                            </label>
                         </div>
                         
+                        <hr>
+                        <h4>Data Logging & Machine Learning</h4>
+                        <div style="font-size:0.8rem; color:#94a3b8; margin-bottom:8px;">Select which metadata to include in the DB for future AI training/analysis.</div>
+                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px;">
+                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_ai_context" ${settings.store_ai_context ? "checked" : ""}><span>AI Context</span></label>
+                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_summary" ${settings.store_summary ? "checked" : ""}><span>Story Summary</span></label>
+                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_user_style" ${settings.store_user_style ? "checked" : ""}><span>User Style</span></label>
+                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_full_prompt" ${settings.store_full_prompt ? "checked" : ""}><span>Full Prompt</span></label>
+                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_raw_response" ${settings.store_raw_response ? "checked" : ""}><span>Raw Response</span></label>
+                        </div>
+                        
+                        <hr>
+                        <h4>UI Configuration & Resizing</h4>
+                        
+                        <div class="flex-container alignitemscenter marginBot5">
+                            <label style="flex:1;">Widget Width: <span id="cs_width_val">${settings.widget_width}</span>vw</label>
+                            <input type="range" id="cs_width" style="flex:1;" value="${settings.widget_width}" min="30" max="100">
+                        </div>
+                        <div class="flex-container alignitemscenter marginBot5">
+                            <label style="flex:1;">Choices Max Height: <span id="cs_height_choices_val">${settings.choice_block_max_height}</span>vh</label>
+                            <input type="range" id="cs_height_choices" style="flex:1;" value="${settings.choice_block_max_height}" min="20" max="90">
+                        </div>
+                        <div class="flex-container alignitemscenter marginBot5">
+                            <label style="flex:1;">Menus Width: <span id="cs_width_modal_val">${settings.modal_width}</span>vw</label>
+                            <input type="range" id="cs_width_modal" style="flex:1;" value="${settings.modal_width}" min="50" max="100">
+                        </div>
+                        <div class="flex-container alignitemscenter marginBot5">
+                            <label style="flex:1;">Menus Height: <span id="cs_height_modal_val">${settings.modal_height}</span>vh</label>
+                            <input type="range" id="cs_height_modal" style="flex:1;" value="${settings.modal_height}" min="50" max="100">
+                        </div>
+
+                        <div class="flex-container alignitemscenter marginBot5">
+                            <label style="flex:1;">Dock Position</label>
+                            <select id="cs_pos" class="text_pole" style="flex:1;">
+                                <option value="top" ${settings.position=='top'?'selected':''}>Top (Below Top Bar)</option>
+                                <option value="bottom" ${settings.position=='bottom'?'selected':''}>Bottom (Above Input Bar)</option>
+                            </select>
+                        </div>
+                        <div class="flex-container alignitemscenter marginBot5">
+                            <label style="flex:1;">Vertical Offset (Top): <span id="cs_y_top_val">${settings.offset_top}</span>px</label>
+                            <input type="range" id="cs_y_top" style="flex:1;" value="${settings.offset_top}" min="0" max="500">
+                        </div>
+                        <div class="flex-container alignitemscenter marginBot5">
+                            <label style="flex:1;">Vertical Offset (Bottom): <span id="cs_y_bot_val">${settings.offset_bottom}</span>px</label>
+                            <input type="range" id="cs_y_bot" style="flex:1;" value="${settings.offset_bottom}" min="0" max="500">
+                        </div>
+
+                        <hr>
+                        <h4>Prompt Engineering</h4>
+
                         <div class="flex-container alignitemscenter marginBot5" title="Delay API calls by X seconds to prevent crashes.">
                             <label style="flex:1;">API Delay: <span id="cs_delay_val">${settings.generationDelay}</span>s</label>
                             <input type="range" id="cs_delay" style="flex:1;" value="${settings.generationDelay}" min="0" max="15" step="1">
@@ -1232,15 +1274,27 @@ import {
                             <label style="flex:1;"><strong>Number of Options:</strong> <span id="cs_num_val">${settings.numOptions}</span></label>
                             <input type="range" id="cs_num" style="flex:1;" value="${settings.numOptions}" min="1" max="10">
                         </div>
+
+                        <div class="flex-container marginBot5 justifySpaceBetween">
+                            <label class="checkbox_label flex-container" title="Inject ST's running summary into the choice generator.">
+                                <input type="checkbox" id="cs_include_summary" ${settings.includeSummary ? "checked" : ""}><span>Include Lore</span>
+                            </label>
+                            <label class="checkbox_label flex-container" title="Extract past messages to teach the LLM your writing style.">
+                                <input type="checkbox" id="cs_use_user_style" ${settings.useUserStyle ? "checked" : ""}><span>Enable Profile</span>
+                            </label>
+                            <label class="checkbox_label flex-container" title="Automatically structure options using the matrix below.">
+                                <input type="checkbox" id="cs_dynamic_matrix" ${settings.dynamicMatrix ? "checked" : ""}><span>Use Matrix</span>
+                            </label>
+                        </div>
                         
                         <div class="flex-container flexFlowColumn marginBot5" style="border-left: 2px solid var(--SmartThemeBorderColor); padding-left: 10px;">
                             <div class="flex-container alignitemscenter justifySpaceBetween">
-                                <label><strong>Option Tone Matrix</strong> <small>(Applied to {{matrix_block}})</small></label>
+                                <label><strong>Option Tone Matrix</strong></label>
                                 <div id="cs_add_matrix" class="menu_button interactable cs-touch-btn margin0" tabindex="0" role="button" style="padding: 2px 8px; font-size: 0.85rem;">
                                     <i class="fa-solid fa-plus"></i> Add Rule
                                 </div>
                             </div>
-                            <div id="cs_matrix_warning" style="color: #ef4444; font-size: 0.85rem; margin-top: 4px; display: none;"><i class="fa-solid fa-triangle-exclamation"></i> Warning: Some matrix targets exceed the Number of Options.</div>
+                            <div id="cs_matrix_warning" style="color: #ef4444; font-size: 0.85rem; margin-top: 4px; display: none;"><i class="fa-solid fa-triangle-exclamation"></i> Warning: Targets exceed Options.</div>
                             <div id="cs_matrix_list" class="flex-container flexFlowColumn marginTop5"></div>
                         </div>
 
@@ -1250,42 +1304,13 @@ import {
                         </div>
                         
                         <div class="flex-container flexFlowColumn marginBot5">
-                            <label for="cs_instruction_prompt"><strong>Master Instruction Prompt</strong> <small>(Supports {{style_block}} and {{matrix_block}})</small></label>
+                            <div class="flex-container alignitemscenter justifySpaceBetween">
+                                <label for="cs_instruction_prompt"><strong>Master Instruction Prompt</strong></label>
+                                <div id="cs_reset_prompts" class="menu_button interactable cs-touch-btn margin0" tabindex="0" role="button" title="Restore Default Prompts" style="padding: 2px 8px; font-size: 0.85rem;">
+                                    <i class="fa-solid fa-rotate-left"></i> Restore Defaults
+                                </div>
+                            </div>
                             <textarea id="cs_instruction_prompt" class="text_pole textarea_compact autoSetHeight" rows="8">${settings.instructionPrompt}</textarea>
-                        </div>
-                        
-                        <hr>
-                        <h4>UI Configuration</h4>
-                        
-                        <div class="flex-container alignitemscenter marginBot5">
-                            <label style="flex:1;">Widget Panel Width: <span id="cs_width_val">${settings.widget_width}</span>vw</label>
-                            <input type="range" id="cs_width" style="flex:1;" value="${settings.widget_width}" min="30" max="100">
-                        </div>
-
-                        <div class="flex-container flexFlowColumn marginBot5">
-                            <label for="cs_dbg">Debug Level (F12 Console)</label>
-                            <select id="cs_dbg" class="text_pole">
-                                <option value="0" ${settings.debugMode==0?'selected':''}>0 - Off</option>
-                                <option value="1" ${settings.debugMode==1?'selected':''}>1 - Normal</option>
-                                <option value="2" ${settings.debugMode==2?'selected':''}>2 - Verbose (Show Prompts)</option>
-                            </select>
-                        </div>
-                        
-                        <div class="flex-container alignitemscenter marginBot5">
-                            <label style="flex:1;">Dock Position</label>
-                            <select id="cs_pos" class="text_pole" style="flex:1;">
-                                <option value="top" ${settings.position=='top'?'selected':''}>Top (Below Top Bar)</option>
-                                <option value="bottom" ${settings.position=='bottom'?'selected':''}>Bottom (Above Input Bar)</option>
-                            </select>
-                        </div>
-                        
-                        <div class="flex-container alignitemscenter marginBot5">
-                            <label style="flex:1;">Vertical Offset (Top): <span id="cs_y_top_val">${settings.offset_top}</span>px</label>
-                            <input type="range" id="cs_y_top" style="flex:1;" value="${settings.offset_top}" min="0" max="500">
-                        </div>
-                        <div class="flex-container alignitemscenter marginBot5">
-                            <label style="flex:1;">Vertical Offset (Bottom): <span id="cs_y_bot_val">${settings.offset_bottom}</span>px</label>
-                            <input type="range" id="cs_y_bot" style="flex:1;" value="${settings.offset_bottom}" min="0" max="500">
                         </div>
                         
                         <hr style="border-color: rgba(255,255,255,0.1); margin: 8px 0;">
@@ -1315,11 +1340,15 @@ import {
             icon.toggleClass('fa-circle-chevron-down fa-circle-chevron-up');
         });
 
-        $("#cs_active").on("change", function() { settings.enabled = this.checked; save(); });
-        $("#cs_skip_interrupt").on("change", function() { settings.skipInterrupted = this.checked; save(); });
-        $("#cs_include_summary").on("change", function() { settings.includeSummary = this.checked; save(); });
-        $("#cs_use_user_style").on("change", function() { settings.useUserStyle = this.checked; updateMatrixUI(); save(); });
-        $("#cs_dynamic_matrix").on("change", function() { settings.dynamicMatrix = this.checked; updateMatrixUI(); save(); });
+        const chkMap = ['cs_active', 'cs_skip_interrupt', 'cs_include_summary', 'cs_use_user_style', 'cs_dynamic_matrix', 'cs_store_ai_context', 'cs_store_summary', 'cs_store_user_style', 'cs_store_full_prompt', 'cs_store_raw_response'];
+        chkMap.forEach(id => {
+            $(`#${id}`).on("change", function() { 
+                const key = id.replace("cs_", "");
+                settings[key] = this.checked; 
+                if (id === 'cs_use_user_style' || id === 'cs_dynamic_matrix') updateMatrixUI(); 
+                save(); 
+            });
+        });
         
         $(`#cs_instruction_prompt`).on("input", function() { settings.instructionPrompt = this.value; save(); });
         $(`#cs_user_style_template`).on("input", function() { settings.userStyleTemplate = this.value; save(); });
@@ -1332,18 +1361,26 @@ import {
                 $(`#${id}_val`).text(this.value); save(); 
             });
         });
-        
-        $("#cs_width").on("input", function() { 
-            settings.widget_width = this.value; 
-            $("#cs_width_val").text(this.value); 
-            document.documentElement.style.setProperty('--cs-panel-width', this.value + 'vw');
-            save(); 
-        });
+
+        const sliderMap = {
+            "cs_width": ["widget_width", "--cs-panel-width", "vw"],
+            "cs_height_choices": ["choice_block_max_height", "--cs-choices-height", "vh"],
+            "cs_width_modal": ["modal_width", "--cs-modal-width", "vw"],
+            "cs_height_modal": ["modal_height", "--cs-modal-height", "vh"]
+        };
+
+        for (const [id, [setKey, cssVar, unit]] of Object.entries(sliderMap)) {
+            $(`#${id}`).on("input", function() { 
+                settings[setKey] = this.value; 
+                $(`#${id}_val`).text(this.value); 
+                document.documentElement.style.setProperty(cssVar, this.value + unit);
+                save(); 
+            });
+        }
 
         $("#cs_y_top").on("input", function() { settings.offset_top = this.value; $("#cs_y_top_val").text(this.value); updateContainerPosition(); save(); });
         $("#cs_y_bot").on("input", function() { settings.offset_bottom = this.value; $("#cs_y_bot_val").text(this.value); updateContainerPosition(); save(); });
 
-        $("#cs_dbg").on("change", function() { settings.debugMode = parseInt(this.value); EXT_LOG_LEVEL = settings.debugMode; save(); });
         $("#cs_pos").on("change", function() { settings.position = this.value; updateContainerPosition(); save(); });
 
         $("#cs_test").on("click", (e) => { e.stopPropagation(); triggerGeneration(true); });
