@@ -12,6 +12,7 @@ choices_db.jsonl
 choices_db.tmp
 Start.bat - Shortcut.lnk
 plugins - Shortcut.lnk
+jsonlToPretty.py - Shortcut.lnk
 default-user - Shortcut.lnk
 choices_db - Shortcut.lnk
 TODO.txt

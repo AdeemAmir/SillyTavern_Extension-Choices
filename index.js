@@ -10,11 +10,11 @@ import { DEFAULT_SETTINGS } from './defaults.js';
 
 (function () {
     const MODULE_NAME = "SillyTavern_Extension-Choices";
-    // Exact route to backend
     const API_BASE = "/api/plugins/sillytavern_extension-choices"; 
     
-    const context = getContext();
-    if (!context) return;
+    // We only use this for initial load-checks. State MUST be grabbed dynamically.
+    const bootContext = getContext();
+    if (!bootContext) return;
 
     let isGenerating = false;
     const REGEX_FALLBACK_LIST = /^[-•.*\s\d]+[\.\:\)]?\s+/;
@@ -49,15 +49,23 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         }
     }
 
+    function formatPreview(text, maxStart = 80, maxEnd = 40) {
+        if (!text) return "";
+        let cleanText = text.replace(/[\r\n]+/g, ' ').trim();
+        if (cleanText.length <= maxStart + maxEnd + 10) return cleanText;
+        return `${cleanText.substring(0, maxStart)} ... ${cleanText.substring(cleanText.length - maxEnd)}`;
+    }
+
     async function loadSettings() {
-        // Merge defaults
+        const liveContext = getContext();
         settings = Object.assign({}, DEFAULT_SETTINGS);
-        
-        // Override with user settings if they exist
-        if (context.extensionSettings[MODULE_NAME]) {
-            Object.assign(settings, context.extensionSettings[MODULE_NAME]);
+        if (liveContext.extensionSettings[MODULE_NAME]) {
+            Object.assign(settings, liveContext.extensionSettings[MODULE_NAME]);
+            
+            // Scrub old payload variables if they exist in cache
+            const scrubKeys = ['useUserStyle', 'userStyleTemplate', 'store_ai_context', 'store_summary', 'store_full_prompt', 'store_raw_response', 'store_custom_direction', 'store_instruction_prompt'];
+            scrubKeys.forEach(k => { if(settings[k] !== undefined) delete settings[k]; });
         }
-        
         applyDynamicCSSVars();
     }
 
@@ -145,7 +153,9 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         }, 2000); 
         
         const bootRetry = setInterval(() => {
-            if (renderSettingsMenu() && addMagicWandButton()) clearInterval(bootRetry);
+            const menuRendered = renderSettingsMenu();
+            const wandRendered = addMagicWandButton();
+            if (menuRendered && wandRendered) clearInterval(bootRetry);
         }, 1000);
 
         eventSource.on('generation_stopped', (type) => { 
@@ -162,7 +172,8 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         });
         
         eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, async () => {
-            const chat = context.chat;
+            const liveContext = getContext();
+            const chat = liveContext.chat;
             if (chat && chat.length > 0) {
                 const lastMsg = chat[chat.length - 1];
                 if (lastMsg.is_system) return; 
@@ -186,41 +197,110 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         });
     }
 
-    // --- IDENTIFICATION LOGIC ---
+    // --- BULLETPROOF CHAT IDENTIFICATION LOGIC ---
     function getChatIdentification() {
-        const charId = context.characterId;
-        const groupId = context.groupId;
-        let cName = "Unknown";
-        let cFile = context.chatId || "Unknown_Chat";
+        const liveContext = getContext();
+        let chara_name = "";
+        let chat_name = "";
 
-        if (groupId && context.groups) {
-            const group = context.groups.find(g => g.id === groupId || g.uid === groupId);
-            if (group) cName = group.name;
-        } else if (charId !== undefined && context.characters) {
-            const char = context.characters[charId];
-            if (char) cName = char.name;
-        } else if (context.name2) {
-            cName = context.name2;
+        // 1. Dynamic API fetch
+        if (liveContext.groupId && liveContext.groups) {
+            const group = liveContext.groups.find(g => g.id === liveContext.groupId || g.uid === liveContext.groupId);
+            if (group && group.name) chara_name = group.name;
+        } else if (liveContext.characterId !== undefined && liveContext.characters && liveContext.characters[liveContext.characterId]) {
+            chara_name = liveContext.characters[liveContext.characterId].name;
         }
-        return { character_or_group_name: cName, chat_name: cFile };
+
+        // 2. ST Global Variables Fallback
+        if (!chara_name && window.selected_group && window.groups) {
+            const group = window.groups.find(g => g.id === window.selected_group || g.uid === window.selected_group);
+            if (group && group.name) chara_name = group.name;
+        } else if (!chara_name && window.this_chid !== undefined && window.characters && window.characters[window.this_chid]) {
+            chara_name = window.characters[window.this_chid].name;
+        }
+
+        // 3. Physical DOM Target
+        if (!chara_name) {
+            const domName = document.querySelector('#rm_button_selected_ch h2')?.innerText || document.querySelector('.ch_name .name_text')?.innerText || document.getElementById('character_name_text')?.innerText;
+            if (domName && domName.trim() && !domName.includes('${')) chara_name = domName.trim();
+        }
+
+        // 4. Chat File Name
+        if (liveContext.chatId) chat_name = liveContext.chatId;
+        else if (window.chat_file_name) chat_name = window.chat_file_name;
+        
+        if (!chat_name) {
+            const domChat = document.querySelector('.select_chat_block[highlight="true"]')?.getAttribute('file_name');
+            if (domChat && domChat.trim()) chat_name = domChat.trim();
+        }
+
+        // 5. Cleanup
+        if (!chara_name || chara_name === "SillyTavern System" || chara_name === "System") chara_name = "Unknown_Character";
+        if (!chat_name) chat_name = "Unknown_Chat";
+
+        if (chat_name === "Unknown_Chat" && chara_name !== "Unknown_Character") {
+            chat_name = chara_name.replace(/[^a-z0-9]/gi, '_').toLowerCase() + "_chat";
+        }
+
+        return { chara_name, chat_name };
+    }
+
+    // --- DEEP SEARCH SUMMARY EXTRACTION ---
+    function extractStorySummary() {
+        const liveContext = getContext();
+        let sum = "";
+        
+        // 1. Direct Physical Extraction from Summarize Extension Textarea
+        const memContents = document.getElementById('memory_contents');
+        if (memContents && memContents.value && memContents.value.trim().length > 0) {
+            sum = memContents.value.trim();
+        }
+
+        // 2. ST internal API variables
+        if (!sum && window.chat_metadata?.summary) sum = window.chat_metadata.summary;
+        if (!sum && liveContext.chatMetadata?.summary) sum = liveContext.chatMetadata.summary;
+        if (!sum && window.extension_settings?.summarize?.summary) sum = window.extension_settings.summarize.summary;
+        if (!sum && liveContext.extensionSettings?.summarize?.summary) sum = liveContext.extensionSettings.summarize.summary;
+        
+        // 3. Fallback scan inside live chat blocks
+        if (!sum && Array.isArray(liveContext.chat)) {
+            for (let i = liveContext.chat.length - 1; i >= 0; i--) {
+                const mes = liveContext.chat[i]?.mes || "";
+                if (liveContext.chat[i].is_system && mes) {
+                    const match = mes.match(/<summary>([\s\S]*?)<\/summary>/i);
+                    if (match) { 
+                        sum = match[1].trim(); 
+                        break; 
+                    }
+                    if (mes.includes("Summary:") || mes.includes("Story Summary:") || mes.includes("<memory>")) {
+                        sum = mes.replace(/^Summary:/i, '').replace(/^Story Summary:/i, '').replace(/^<memory>/i, '').trim();
+                        break;
+                    }
+                }
+            }
+        }
+        
+        return sum ? sum.trim() : "";
     }
 
     function generateUniqueId() {
         const d = new Date();
+        const pad = (n, m=2) => String(n).padStart(m, '0');
         const yy = String(d.getFullYear()).slice(-2);
-        const mm = String(d.getMonth() + 1).padStart(2, '0');
-        const dd = String(d.getDate()).padStart(2, '0');
-        const hh = String(d.getHours()).padStart(2, '0');
-        const mn = String(d.getMinutes()).padStart(2, '0');
-        const ss = String(d.getSeconds()).padStart(2, '0');
-        const ms = String(d.getMilliseconds()).padStart(3, '0');
+        const mm = pad(d.getMonth() + 1);
+        const dd = pad(d.getDate());
+        const hh = pad(d.getHours());
+        const mn = pad(d.getMinutes());
+        const ss = pad(d.getSeconds());
+        const ms = pad(d.getMilliseconds(), 3);
         const hash = Math.random().toString(36).substring(2, 8).padEnd(6, '0');
         return `${yy}${mm}${dd}${hh}${mn}${ss}${ms}_${hash}`;
     }
 
     function extractAIResponseContext() {
-        const chat = context.chat;
-        if (!chat || chat.length === 0) return "No prior context.";
+        const liveContext = getContext();
+        const chat = liveContext.chat || [];
+        if (chat.length === 0) return "No prior context.";
         for (let i = chat.length - 1; i >= 0; i--) {
             if (!chat[i].is_user && !chat[i].is_system && chat[i].mes) {
                 return chat[i].mes;
@@ -229,7 +309,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         return "No AI message found.";
     }
 
-    // --- UNIFIED DB ABSTRACTION (SERVER vs INDEXEDDB) ---
+    // --- UNIFIED DB ABSTRACTION ---
     function getApiHeaders() {
         let headers = { 'Content-Type': 'application/json' };
         try {
@@ -245,7 +325,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
             if (settings.storageMode === 'server') {
                 try {
                     payload.db_path = settings.custom_db_path || "";
-                    const res = await $.ajax({ url: `${API_BASE}/log`, type: 'POST', headers: getApiHeaders(), contentType: 'application/json', data: JSON.stringify(payload) });
+                    await $.ajax({ url: `${API_BASE}/log`, type: 'POST', headers: getApiHeaders(), contentType: 'application/json', data: JSON.stringify(payload) });
                     if(window.toastr) window.toastr.success(`Saved to Server DB successfully.`, "Choices");
                 } catch (e) { 
                     log("API Log Error: " + e.responseText, 1); 
@@ -261,7 +341,21 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                 const chatRecords = all.filter(r => r.chat_name === payload.chat_name);
                 payload.chat_num = chatRecords.length > 0 ? chatRecords[chatRecords.length - 1].chat_num + 1 : 1;
                 
-                store.add(payload);
+                // Enforce Schema for Local DB
+                const orderedData = {
+                    id: payload.id,
+                    chara_name: payload.chara_name || "Unknown_Character",
+                    chat_name: payload.chat_name || "Unknown_Chat",
+                    global_num: payload.global_num,
+                    chat_num: payload.chat_num,
+                    status: payload.status,
+                    ai_context: payload.ai_context || "",
+                    story_summary: payload.story_summary || "",
+                    custom_direction: payload.custom_direction || "",
+                    data: payload.data || ""
+                };
+                
+                store.add(orderedData);
                 if(window.toastr) window.toastr.success(`Saved to LocalDB successfully.`, "Choices");
             }
         },
@@ -271,7 +365,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                     const encodedPath = encodeURIComponent(settings.custom_db_path || "");
                     return await $.ajax({ url: `${API_BASE}/db?db_path=${encodedPath}`, type: 'GET', headers: getApiHeaders(), dataType: 'json' });
                 } catch (e) {
-                    if (e.status === 404 && window.toastr) window.toastr.error("Choice Stream backend not found! Please run the Python installer script.", "Backend Error");
+                    if (e.status === 404 && window.toastr) window.toastr.error("Choice Stream backend not found! Please run the Python/Bat installer script.", "Backend Error");
                     return [];
                 }
             } else {
@@ -315,14 +409,26 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                 
                 const tx = localDB.transaction("logs", "readwrite");
                 const store = tx.objectStore("logs");
-                for(let data of records) {
+                for(let payload of records) {
                     currentGlobal++;
-                    const chatRecords = all.filter(r => r.chat_name === data.chat_name);
+                    const chatRecords = all.filter(r => r.chat_name === payload.chat_name);
                     const chat_num = chatRecords.length > 0 ? chatRecords[chatRecords.length - 1].chat_num + 1 : 1;
-                    data.global_num = currentGlobal;
-                    data.chat_num = chat_num;
-                    all.push(data); 
-                    store.add(data);
+                    
+                    const orderedData = {
+                        id: payload.id,
+                        chara_name: payload.chara_name || "Unknown_Character",
+                        chat_name: payload.chat_name || "Unknown_Chat",
+                        global_num: currentGlobal,
+                        chat_num: chat_num,
+                        status: payload.status,
+                        ai_context: payload.ai_context || "",
+                        story_summary: payload.story_summary || "",
+                        custom_direction: payload.custom_direction || "",
+                        data: payload.data || ""
+                    };
+
+                    all.push(orderedData); 
+                    store.add(orderedData);
                 }
             }
         }
@@ -397,14 +503,16 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         modalOverlay.id = 'cs_history_modal';
         modalOverlay.className = 'cs-modal-overlay';
         
-        const { chat_name } = getChatIdentification();
+        const { chara_name, chat_name } = getChatIdentification();
         let allRecords = await DB.getAll();
         
         let allClusters = allRecords.filter(r => r.status === "SUCCESS");
         allClusters.sort((a,b) => (b.global_num || 0) - (a.global_num || 0));
         
         const chatKeysMap = {};
-        allClusters.forEach(c => chatKeysMap[c.chat_name] = c.character_or_group_name);
+        allClusters.forEach(c => {
+            if (c.chat_name) chatKeysMap[c.chat_name] = c.chara_name || "Unknown_Character";
+        });
 
         let filtered = allClusters;
         if (filterChat !== "__ALL__") {
@@ -413,7 +521,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         if (searchKeyword.trim() !== "") {
             const kw = searchKeyword.toLowerCase();
             filtered = filtered.filter(c => 
-                (c.character_or_group_name && c.character_or_group_name.toLowerCase().includes(kw)) || 
+                (c.chara_name && c.chara_name.toLowerCase().includes(kw)) || 
                 (c.data && Array.isArray(c.data) && c.data.some(choice => choice.toLowerCase().includes(kw))) ||
                 (c.custom_direction && c.custom_direction.toLowerCase().includes(kw)) ||
                 (c.ai_context && c.ai_context.toLowerCase().includes(kw))
@@ -421,7 +529,14 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         }
 
         let chatOptionsHtml = `<option value="__ALL__" ${filterChat === '__ALL__' ? 'selected' : ''}>All Chats (${allClusters.length} saves)</option>`;
-        const chatKeysArr = Object.keys(chatKeysMap).sort((a,b) => a === chat_name ? -1 : (b === chat_name ? 1 : chatKeysMap[a].localeCompare(chatKeysMap[b])));
+        
+        const chatKeysArr = Object.keys(chatKeysMap).sort((a,b) => {
+            if (a === chat_name) return -1;
+            if (b === chat_name) return 1;
+            const nameA = String(chatKeysMap[a] || a || "");
+            const nameB = String(chatKeysMap[b] || b || "");
+            return nameA.localeCompare(nameB);
+        });
         
         chatKeysArr.forEach(cId => {
             const isCurr = cId === chat_name ? '★ [Current] ' : '';
@@ -438,9 +553,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                 const choicesArray = Array.isArray(cluster.data) ? cluster.data : (cluster.choices || []);
                 const totalWords = choicesArray.reduce((acc, c) => acc + (c.trim() ? c.trim().split(/\s+/).length : 0), 0);
                 const totalChars = choicesArray.reduce((acc, c) => acc + c.length, 0);
-                const estTokens = Math.round(totalWords * 1.3);
                 
-                // Format ID for display
                 const rawId = cluster.id || "Unknown";
                 const displayId = rawId.includes('_') ? rawId.split('_')[0] : rawId;
 
@@ -449,7 +562,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                         <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:6px;">
                             <div style="display:flex; flex-direction:column; gap:4px;">
                                 <div style="font-weight:bold; font-size:0.95rem; color:#a78bfa;">
-                                    ${cluster.character_or_group_name} 
+                                    ${cluster.chara_name} 
                                     ${cluster.chat_name === chat_name ? '<span style="color:#10b981; font-size:0.75rem; font-weight:normal;">(Active Chat)</span>' : ''}
                                 </div>
                                 <div style="display:flex; gap:6px; flex-wrap:wrap;">
@@ -469,11 +582,11 @@ import { DEFAULT_SETTINGS } from './defaults.js';
 
                         ${cluster.ai_context ? `
                         <div style="font-size: 0.82rem; color: #cbd5e1; margin-top: 6px; margin-bottom: 6px; font-style: italic; border-left: 2px solid #64748b; padding-left: 6px;">
-                            ${cluster.ai_context.substring(0, 150)}${cluster.ai_context.length > 150 ? '...' : ''}
+                            ${formatPreview(cluster.ai_context, 100, 40).replace(/</g, '&lt;')}
                         </div>` : ''}
 
                         <div class="cs-cluster-preview" style="font-size:0.88rem; opacity:0.85; cursor:pointer;">
-                            ${choicesArray.map((c, i) => `<div><span style="color:#8b5cf6;">[${i+1}]</span> ${c.substring(0, 110)}...</div>`).join('')}
+                            ${choicesArray.map((c, i) => `<div><span style="color:#8b5cf6;">[${i+1}]</span> ${formatPreview(c, 80, 40).replace(/</g, '&lt;')}</div>`).join('')}
                         </div>
 
                         <div class="cs-toggle-inspect" style="font-size:0.8rem; color:#8b5cf6; cursor:pointer; text-decoration:underline;">
@@ -487,12 +600,6 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                                 <div style="margin-top:4px; max-height:80px; overflow-y:auto; opacity:0.85;">${cluster.ai_context.replace(/</g, '&lt;')}</div>
                             </div>` : ''}
                             
-                            ${cluster.instruction_prompt ? `
-                            <div style="font-size:0.8rem; background:rgba(0,0,0,0.3); padding:8px; border-radius:4px; border-left:3px solid #f59e0b;">
-                                <b style="color:#fbbf24;">Master Instruction Prompt Used:</b>
-                                <div style="margin-top:4px; max-height:80px; overflow-y:auto; opacity:0.85; white-space:pre-wrap;">${cluster.instruction_prompt.replace(/</g, '&lt;')}</div>
-                            </div>` : ''}
-
                             ${choicesArray.map((c, i) => {
                                 const w = c.trim().split(/\s+/).length;
                                 return `
@@ -648,7 +755,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                     <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.07); border-radius:6px; padding:10px;">
                         <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
                             <div>
-                                <b style="color:#ef4444;">${fail.character_or_group_name}</b>
+                                <b style="color:#ef4444;">${fail.chara_name}</b>
                                 <div style="display:flex; gap:6px; margin-top:3px; flex-wrap:wrap;">
                                     <span class="cs-stat-pill" title="Global DB Num">G# ${fail.global_num}</span>
                                     <span class="cs-stat-pill" title="Timestamp ID"><i class="fa-solid fa-clock"></i> ${displayId}</span>
@@ -663,7 +770,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
 
                         ${fail.ai_context ? `
                         <div style="font-size: 0.82rem; color: #cbd5e1; margin-bottom: 8px; font-style: italic; border-left: 2px solid #ef4444; padding-left: 6px;">
-                            <b>Failed context snippet:</b> "${fail.ai_context.substring(0, 150)}${fail.ai_context.length > 150 ? '...' : ''}"
+                            <b>Failed context snippet:</b> "${formatPreview(fail.ai_context, 100, 40).replace(/</g, '&lt;')}"
                         </div>` : ''}
 
                         <div class="cs-failed-item">${rawString.replace(/</g, '&lt;')}</div>
@@ -880,8 +987,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         return Array.from(indices).sort((a, b) => a - b);
     }
 
-    function getResolvedMatrix(maxOptions, bypass = false) {
-        if (bypass) return []; 
+    function getResolvedMatrix(maxOptions) {
         let assigned = new Set();
         let resolvedRules = [];
         
@@ -905,9 +1011,9 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         return resolvedRules;
     }
 
-    function buildMatrixPrompt(hasCustomDirection = false) {
+    function buildMatrixPrompt() {
         let maxOptions = parseInt(settings.numOptions);
-        let resolvedRules = getResolvedMatrix(maxOptions, hasCustomDirection);
+        let resolvedRules = getResolvedMatrix(maxOptions);
         
         if (resolvedRules.length === 0) {
             return `Generate exactly ${maxOptions} distinct action/dialogue choices.\n`;
@@ -919,27 +1025,6 @@ import { DEFAULT_SETTINGS } from './defaults.js';
             matrixStr += `- Option${rule.targets.length > 1 ? 's' : ''} ${targetsStr}: ${rule.text}\n`;
         });
         return matrixStr.trim();
-    }
-
-    function extractStorySummary() {
-        if (!settings.includeSummary) return "";
-        let sum = "";
-        
-        if (context.extensionSettings?.summarize?.summary) sum = context.extensionSettings.summarize.summary;
-        if (!sum && context.extensionSettings?.memory?.context) sum = context.extensionSettings.memory.context;
-        if (!sum && context.chatMetadata?.summary) sum = context.chatMetadata.summary;
-        if (!sum && context.chat) {
-            for (let i = context.chat.length - 1; i >= 0; i--) {
-                if (context.chat[i].is_system && context.chat[i].mes) {
-                    const mes = context.chat[i].mes;
-                    if (mes.includes("Summary:") || mes.includes("<memory>") || mes.includes("Previous context:")) {
-                        sum = mes.trim();
-                        break;
-                    }
-                }
-            }
-        }
-        return sum ? `### STORY SUMMARY ###\n${sum}` : "";
     }
 
     async function triggerGeneration(isTest = false, customDirection = "") {
@@ -961,7 +1046,8 @@ import { DEFAULT_SETTINGS } from './defaults.js';
             return;
         }
 
-        const chat = context.chat;
+        const liveContext = getContext();
+        const chat = liveContext.chat;
         if (!chat?.length || chat[chat.length - 1].is_user) {
             log("Cannot generate choices: Last message in chat is from the user.", 2);
             if (window.toastr) window.toastr.warning("You must wait for the character to reply before generating choices.", "Generation Blocked");
@@ -971,17 +1057,16 @@ import { DEFAULT_SETTINGS } from './defaults.js';
 
         isGenerating = true;
         const storySummary = extractStorySummary();
-        const dynamicMatrix = buildMatrixPrompt(false);
+        const dynamicMatrix = buildMatrixPrompt();
         let compiledPrompt = "";
         let rawResponse = "";
         let choices = [];
         let isSuccess = false;
-        let stInstruction = "";
         
         try {
             log(`Fetching ${settings.numOptions} choices from backend...`, 1);
 
-            stInstruction = settings.instructionPrompt
+            let stInstruction = settings.instructionPrompt
                 .replaceAll("{{numOptions}}", settings.numOptions)
                 .replaceAll("{{matrix_block}}", dynamicMatrix);
 
@@ -995,7 +1080,8 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                 }
             }
 
-            compiledPrompt = storySummary ? `${storySummary}\n\n${stInstruction}` : stInstruction;
+            const formattedSummary = storySummary ? `### STORY SUMMARY ###\n${storySummary}` : "";
+            compiledPrompt = formattedSummary ? `${formattedSummary}\n\n${stInstruction}` : stInstruction;
             
             rawResponse = await executeWithRetry(() => fetchRaw(compiledPrompt), 1, 3000);
             choices = parseLLMArray(rawResponse);
@@ -1014,17 +1100,16 @@ import { DEFAULT_SETTINGS } from './defaults.js';
             if (goBtnIcon) goBtnIcon.className = "fa-solid fa-play";
             
             if (rawResponse) {
-                const { character_or_group_name, chat_name } = getChatIdentification();
+                const { chara_name, chat_name } = getChatIdentification();
                 const payload = {
                     id: generateUniqueId(),
-                    character_or_group_name,
-                    chat_name,
+                    chara_name: chara_name,
+                    chat_name: chat_name,
                     status: isSuccess ? "SUCCESS" : "FAIL",
-                    ai_context: settings.store_ai_context ? extractAIResponseContext() : "",
-                    story_summary: settings.store_summary ? storySummary : "",
+                    ai_context: extractAIResponseContext(),
+                    story_summary: storySummary,
                     custom_direction: customDirection.trim(),
-                    instruction_prompt: settings.store_instruction_prompt ? stInstruction : "",
-                    data: isSuccess ? choices : (settings.store_raw_response ? rawResponse : "")
+                    data: isSuccess ? choices : rawResponse
                 };
 
                 DB.log(payload);
@@ -1283,7 +1368,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                         
                         <hr>
                         <h4>Storage & Database Configuration</h4>
-                        <div style="font-size:0.8rem; color:#94a3b8; margin-bottom:8px;">Choose where to save your generated history. Server Mode requires running the Python Installation Script.</div>
+                        <div style="font-size:0.8rem; color:#94a3b8; margin-bottom:8px;">Choose where to save your generated history. Server Mode requires running the Installation Script.</div>
                         <div class="flex-container alignitemscenter marginBot5">
                             <label style="flex:1;">Storage Engine:</label>
                             <select id="cs_storageMode" class="text_pole" style="flex:1;">
@@ -1296,14 +1381,6 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                             <input type="text" id="cs_custom_db_path" class="text_pole" style="flex:1;" placeholder="Leave empty for default" value="${settings.custom_db_path}">
                         </div>
 
-                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; margin-top: 8px;">
-                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_ai_context" ${settings.store_ai_context ? "checked" : ""}><span>Log AI Context</span></label>
-                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_summary" ${settings.store_summary ? "checked" : ""}><span>Log Summary</span></label>
-                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_instruction_prompt" ${settings.store_instruction_prompt ? "checked" : ""}><span>Log Instructions</span></label>
-                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_custom_direction" ${settings.store_custom_direction ? "checked" : ""}><span>Log Direction</span></label>
-                            <label class="checkbox_label flex-container"><input type="checkbox" id="cs_store_raw_response" ${settings.store_raw_response ? "checked" : ""}><span>Log Raw Response</span></label>
-                        </div>
-                        
                         <hr>
                         <h4>UI Configuration & Resizing</h4>
                         
@@ -1416,7 +1493,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
             icon.toggleClass('fa-circle-chevron-down fa-circle-chevron-up');
         });
 
-        const chkMap = ['cs_active', 'cs_skip_interrupt', 'cs_include_summary', 'cs_dynamic_matrix', 'cs_store_ai_context', 'cs_store_summary', 'cs_store_instruction_prompt', 'cs_store_custom_direction', 'cs_store_raw_response'];
+        const chkMap = ['cs_active', 'cs_skip_interrupt', 'cs_include_summary', 'cs_dynamic_matrix'];
         chkMap.forEach(id => {
             $(`#${id}`).on("change", function() { 
                 const key = id.replace("cs_", "");
@@ -1532,8 +1609,10 @@ import { DEFAULT_SETTINGS } from './defaults.js';
     }
 
     function save() {
-        context.extensionSettings[MODULE_NAME] = settings;
-        if (context.saveSettingsDebounced) context.saveSettingsDebounced();
+        // Need to grab live context so debouncer fires properly
+        const liveContext = getContext();
+        liveContext.extensionSettings[MODULE_NAME] = settings;
+        if (liveContext.saveSettingsDebounced) liveContext.saveSettingsDebounced();
         updateContainerPosition();
     }
 

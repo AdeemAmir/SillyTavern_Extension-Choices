@@ -1,7 +1,6 @@
 const MD_JSON_START = ['\x60', '\x60', '\x60', 'json'].join('');
 
 export const DEFAULT_SETTINGS = {
-    // Switch to "local" before pushing to GitHub for zero-setup users.
     storageMode: 'server', 
     custom_db_path: '',
     
@@ -17,14 +16,6 @@ export const DEFAULT_SETTINGS = {
     offset_top: 10,
     offset_bottom: 50,
     
-    // Expanded Data Logging
-    store_ai_context: true,
-    store_summary: true,
-    store_instruction_prompt: true,
-    store_custom_direction: true,
-    store_raw_response: true,
-    
-    // Resizing
     widget_width: 90, 
     choice_block_max_height: 40,
     modal_width: 95,
