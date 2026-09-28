@@ -12,7 +12,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
     const MODULE_NAME = "SillyTavern_Extension-Choices";
     const API_BASE = "/api/plugins/sillytavern_extension-choices"; 
     
-    // We only use this for initial load-checks. State MUST be grabbed dynamically.
+    // Static boot context is used for extension registration ONLY
     const bootContext = getContext();
     if (!bootContext) return;
 
@@ -49,6 +49,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         }
     }
 
+    // Dynamic text truncator: {start} ... {ending}
     function formatPreview(text, maxStart = 80, maxEnd = 40) {
         if (!text) return "";
         let cleanText = text.replace(/[\r\n]+/g, ' ').trim();
@@ -57,14 +58,19 @@ import { DEFAULT_SETTINGS } from './defaults.js';
     }
 
     async function loadSettings() {
-        const liveContext = getContext();
         settings = Object.assign({}, DEFAULT_SETTINGS);
-        if (liveContext.extensionSettings[MODULE_NAME]) {
-            Object.assign(settings, liveContext.extensionSettings[MODULE_NAME]);
+        if (bootContext.extensionSettings[MODULE_NAME]) {
+            Object.assign(settings, bootContext.extensionSettings[MODULE_NAME]);
             
             // Scrub old payload variables if they exist in cache
-            const scrubKeys = ['useUserStyle', 'userStyleTemplate', 'store_ai_context', 'store_summary', 'store_full_prompt', 'store_raw_response', 'store_custom_direction', 'store_instruction_prompt'];
-            scrubKeys.forEach(k => { if(settings[k] !== undefined) delete settings[k]; });
+            if (settings.useUserStyle !== undefined) delete settings.useUserStyle;
+            if (settings.userStyleTemplate !== undefined) delete settings.userStyleTemplate;
+            if (settings.store_ai_context !== undefined) delete settings.store_ai_context;
+            if (settings.store_summary !== undefined) delete settings.store_summary;
+            if (settings.store_full_prompt !== undefined) delete settings.store_full_prompt;
+            if (settings.store_raw_response !== undefined) delete settings.store_raw_response;
+            if (settings.store_custom_direction !== undefined) delete settings.store_custom_direction;
+            if (settings.store_instruction_prompt !== undefined) delete settings.store_instruction_prompt;
         }
         applyDynamicCSSVars();
     }
@@ -153,9 +159,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         }, 2000); 
         
         const bootRetry = setInterval(() => {
-            const menuRendered = renderSettingsMenu();
-            const wandRendered = addMagicWandButton();
-            if (menuRendered && wandRendered) clearInterval(bootRetry);
+            if (renderSettingsMenu() && addMagicWandButton()) clearInterval(bootRetry);
         }, 1000);
 
         eventSource.on('generation_stopped', (type) => { 
@@ -173,9 +177,8 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         
         eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, async () => {
             const liveContext = getContext();
-            const chat = liveContext.chat;
-            if (chat && chat.length > 0) {
-                const lastMsg = chat[chat.length - 1];
+            if (liveContext && liveContext.chat && liveContext.chat.length > 0) {
+                const lastMsg = liveContext.chat[liveContext.chat.length - 1];
                 if (lastMsg.is_system) return; 
             }
 
@@ -200,47 +203,34 @@ import { DEFAULT_SETTINGS } from './defaults.js';
     // --- BULLETPROOF CHAT IDENTIFICATION LOGIC ---
     function getChatIdentification() {
         const liveContext = getContext();
-        let chara_name = "";
-        let chat_name = "";
+        let chara_name = "Unknown_Character";
+        let chat_name = "Unknown_Chat";
 
-        // 1. Dynamic API fetch
-        if (liveContext.groupId && liveContext.groups) {
-            const group = liveContext.groups.find(g => g.id === liveContext.groupId || g.uid === liveContext.groupId);
-            if (group && group.name) chara_name = group.name;
-        } else if (liveContext.characterId !== undefined && liveContext.characters && liveContext.characters[liveContext.characterId]) {
-            chara_name = liveContext.characters[liveContext.characterId].name;
+        // 1. Precise HTML DOM Grab (Overrides everything)
+        const domName = document.querySelector('.ch_name .name_text')?.innerText || document.getElementById('character_name_text')?.innerText;
+        if (domName && domName.trim() && !domName.includes('${')) chara_name = domName.trim();
+        else if (window.name2 && !window.name2.includes('${')) chara_name = window.name2;
+        else if (liveContext.name2 && !liveContext.name2.includes('${')) chara_name = liveContext.name2;
+
+        // 2. Chat File Name Resolution
+        if (liveContext.chatId) {
+            chat_name = liveContext.chatId;
+        } else if (window.chat_metadata?.chat_id) {
+            chat_name = window.chat_metadata.chat_id;
+        } else if (window.chat_file_name) {
+            chat_name = window.chat_file_name;
+        } else if (typeof window.this_chid !== 'undefined' && window.characters && window.characters[window.this_chid]?.chat) {
+            chat_name = window.characters[window.this_chid].chat;
+        } else {
+            const domChat = document.querySelector('.select_chat_block[highlight="true"]') || document.querySelector('.select_chat_block.selected_chat');
+            if (domChat && domChat.getAttribute('file_name')) {
+                chat_name = domChat.getAttribute('file_name').trim();
+            }
         }
 
-        // 2. ST Global Variables Fallback
-        if (!chara_name && window.selected_group && window.groups) {
-            const group = window.groups.find(g => g.id === window.selected_group || g.uid === window.selected_group);
-            if (group && group.name) chara_name = group.name;
-        } else if (!chara_name && window.this_chid !== undefined && window.characters && window.characters[window.this_chid]) {
-            chara_name = window.characters[window.this_chid].name;
-        }
-
-        // 3. Physical DOM Target
-        if (!chara_name) {
-            const domName = document.querySelector('#rm_button_selected_ch h2')?.innerText || document.querySelector('.ch_name .name_text')?.innerText || document.getElementById('character_name_text')?.innerText;
-            if (domName && domName.trim() && !domName.includes('${')) chara_name = domName.trim();
-        }
-
-        // 4. Chat File Name
-        if (liveContext.chatId) chat_name = liveContext.chatId;
-        else if (window.chat_file_name) chat_name = window.chat_file_name;
-        
-        if (!chat_name) {
-            const domChat = document.querySelector('.select_chat_block[highlight="true"]')?.getAttribute('file_name');
-            if (domChat && domChat.trim()) chat_name = domChat.trim();
-        }
-
-        // 5. Cleanup
-        if (!chara_name || chara_name === "SillyTavern System" || chara_name === "System") chara_name = "Unknown_Character";
+        // 3. Scrub SillyTavern default system names
+        if (chara_name === "SillyTavern System" || chara_name === "System") chara_name = "System / Utility";
         if (!chat_name) chat_name = "Unknown_Chat";
-
-        if (chat_name === "Unknown_Chat" && chara_name !== "Unknown_Character") {
-            chat_name = chara_name.replace(/[^a-z0-9]/gi, '_').toLowerCase() + "_chat";
-        }
 
         return { chara_name, chat_name };
     }
@@ -262,7 +252,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         if (!sum && window.extension_settings?.summarize?.summary) sum = window.extension_settings.summarize.summary;
         if (!sum && liveContext.extensionSettings?.summarize?.summary) sum = liveContext.extensionSettings.summarize.summary;
         
-        // 3. Fallback scan inside live chat blocks
+        // 3. Fallback scan inside chat blocks
         if (!sum && Array.isArray(liveContext.chat)) {
             for (let i = liveContext.chat.length - 1; i >= 0; i--) {
                 const mes = liveContext.chat[i]?.mes || "";
@@ -299,8 +289,8 @@ import { DEFAULT_SETTINGS } from './defaults.js';
 
     function extractAIResponseContext() {
         const liveContext = getContext();
-        const chat = liveContext.chat || [];
-        if (chat.length === 0) return "No prior context.";
+        const chat = liveContext.chat;
+        if (!chat || chat.length === 0) return "No prior context.";
         for (let i = chat.length - 1; i >= 0; i--) {
             if (!chat[i].is_user && !chat[i].is_system && chat[i].mes) {
                 return chat[i].mes;
@@ -341,7 +331,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                 const chatRecords = all.filter(r => r.chat_name === payload.chat_name);
                 payload.chat_num = chatRecords.length > 0 ? chatRecords[chatRecords.length - 1].chat_num + 1 : 1;
                 
-                // Enforce Schema for Local DB
+                // Enforce Schema
                 const orderedData = {
                     id: payload.id,
                     chara_name: payload.chara_name || "Unknown_Character",
@@ -365,7 +355,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                     const encodedPath = encodeURIComponent(settings.custom_db_path || "");
                     return await $.ajax({ url: `${API_BASE}/db?db_path=${encodedPath}`, type: 'GET', headers: getApiHeaders(), dataType: 'json' });
                 } catch (e) {
-                    if (e.status === 404 && window.toastr) window.toastr.error("Choice Stream backend not found! Please run the Python/Bat installer script.", "Backend Error");
+                    if (e.status === 404 && window.toastr) window.toastr.error("Choice Stream backend not found! Please run the Python installer script.", "Backend Error");
                     return [];
                 }
             } else {
@@ -530,6 +520,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
 
         let chatOptionsHtml = `<option value="__ALL__" ${filterChat === '__ALL__' ? 'selected' : ''}>All Chats (${allClusters.length} saves)</option>`;
         
+        // Ensure string casting to prevent localeCompare crashes on malformed legacy data
         const chatKeysArr = Object.keys(chatKeysMap).sort((a,b) => {
             if (a === chat_name) return -1;
             if (b === chat_name) return 1;
@@ -1609,7 +1600,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
     }
 
     function save() {
-        // Need to grab live context so debouncer fires properly
+        // Must grab live context to debounce correctly without clearing it.
         const liveContext = getContext();
         liveContext.extensionSettings[MODULE_NAME] = settings;
         if (liveContext.saveSettingsDebounced) liveContext.saveSettingsDebounced();
