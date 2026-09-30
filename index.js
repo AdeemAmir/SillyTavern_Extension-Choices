@@ -6,13 +6,99 @@ import {
 } from '../../../../script.js';
 
 import { getContext } from '../../../extensions.js';
-import { DEFAULT_SETTINGS } from './defaults.js';
 
 (function () {
     const MODULE_NAME = "SillyTavern_Extension-Choices";
+    const MODULE_VERSION = "2.3.0"; // Version updated
     const API_BASE = "/api/plugins/sillytavern_extension-choices"; 
     
-    // Static boot context is used for extension registration ONLY
+    // --- V2.3.0 DEFAULT PROMPTS & MATRIX ---
+    const defaultPrompts = {
+        instructionPrompt: `[CHOICE GENERATOR]
+
+Analyze the story through its CURRENT END and generate possible continuations following this matrix.
+
+{{matrix_block}}
+
+[BRANCHING RULE]
+
+Generate all choices independently from the EXACT SAME story state at the CURRENT END.
+
+For every choice, return to that exact ending before generating it.
+
+Choices are parallel branches, not sequential steps. A choice MUST NOT use, reference, remember, react to, or build upon anything invented in another choice. Do not allow one choice to affect any other choice.
+
+Every choice must begin with the same:
+* time
+* location
+* status quo
+* characters present
+* character knowledge
+* relationships
+* events
+* physical and emotional circumstances
+
+Only what happens AFTER the current ending may differ between choices.
+
+[CONTINUATION]
+
+Continue naturally from the current scene.
+Do not time-skip. Stay close to the immediate situation and show what happens next through actions, dialogue, reactions, and relevant detail.
+Make the choices meaningfully different in direction, not merely different in wording.
+Prefer plausible developments over artificial drama. Do not force every story thread into every choice.
+Use the provided matrices to vary the direction of the choices and avoid immediately repeating the same type of scene.
+
+[OUTPUT RULES]
+
+Return ONLY a valid JSON array containing exactly {{numOptions}} objects.
+Each object MUST contain exactly one key: "choice".
+The value MUST be actual narrative prose, not a title, explanation, summary, or reasoning.
+
+Strict Format Example Template:
+\`\`\`json
+[
+  {"choice":"..."},
+  {"choice":"..."}
+]
+\`\`\``,
+        defaultMatrix: [
+            { range: "1", text: "Action-oriented: The character takes a direct, physical, or decisive action." },
+            { range: "2", text: "Dialogue-driven: The character speaks up, asks a probing question, or confronts someone." },
+            { range: "3", text: "Cautious/Defensive: The character hesitates, assesses the situation, or takes a defensive stance." },
+            { range: "4", text: "Emotional/Introspective: The character reacts internally, showing vulnerability or strong emotion." },
+            { range: "5", text: "Creative/Unexpected: The character does something unconventional, surprising, or out of the box." }
+        ]
+    };
+
+    const DEFAULT_SETTINGS = {
+        enabled: true,
+        skipInterrupted: true,
+        debugMode: false,
+        storageMode: 'local', 
+        custom_db_path: '',
+        
+        widget_width: 90,
+        widget_left: '40%',
+        widget_top: '40%',
+        widget_bottom: '',
+        
+        modal_width: 95,
+        modal_height: 90,
+        modal_start: 0, 
+        position: 'bottom',
+        offset_top: 10,
+        offset_bottom: 50,
+        choice_block_max_height: 40,
+        
+        generationDelay: 2,
+        numOptions: 5,
+        includeSummary: true,
+        dynamicMatrix: true,
+        
+        matrix: JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix)),
+        instructionPrompt: defaultPrompts.instructionPrompt
+    };
+
     const bootContext = getContext();
     if (!bootContext) return;
 
@@ -27,7 +113,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
     let DOM_textarea = null; 
     let formObserver = null;
     
-    // --- LOCAL INDEXED DB (Fallback) ---
+    // --- LOCAL INDEXED DB ---
     const DB_NAME = "ST_Choices_LocalDB";
     let localDB = null;
     
@@ -43,14 +129,15 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         });
     }
 
+    // Toggleable Debug Logging
     function log(text, level = 1) {
-        if (settings.debugMode >= level) {
-            console.log(`%c[ST-Choices] ${text}`, level === 2 ? 'color: #8b5cf6;' : 'color: #10b981; font-weight: bold;');
+        if (settings.debugMode) {
+            console.log(`%c[ST-Choices v${MODULE_VERSION}] ${text}`, level === 2 ? 'color: #8b5cf6;' : 'color: #10b981; font-weight: bold;');
         }
     }
 
-    // Dynamic text truncator: {start} ... {ending}
-    function formatPreview(text, maxStart = 80, maxEnd = 40) {
+    // Updated Format Preview
+    function formatPreview(text, maxStart = 120, maxEnd = 80) {
         if (!text) return "";
         let cleanText = text.replace(/[\r\n]+/g, ' ').trim();
         if (cleanText.length <= maxStart + maxEnd + 10) return cleanText;
@@ -62,16 +149,13 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         if (bootContext.extensionSettings[MODULE_NAME]) {
             Object.assign(settings, bootContext.extensionSettings[MODULE_NAME]);
             
-            // Scrub old payload variables if they exist in cache
-            if (settings.useUserStyle !== undefined) delete settings.useUserStyle;
-            if (settings.userStyleTemplate !== undefined) delete settings.userStyleTemplate;
-            if (settings.store_ai_context !== undefined) delete settings.store_ai_context;
-            if (settings.store_summary !== undefined) delete settings.store_summary;
-            if (settings.store_full_prompt !== undefined) delete settings.store_full_prompt;
-            if (settings.store_raw_response !== undefined) delete settings.store_raw_response;
-            if (settings.store_custom_direction !== undefined) delete settings.store_custom_direction;
-            if (settings.store_instruction_prompt !== undefined) delete settings.store_instruction_prompt;
+            const legacyKeys = ['useUserStyle', 'userStyleTemplate', 'store_ai_context', 'store_summary', 'store_full_prompt', 'store_raw_response', 'store_custom_direction', 'store_instruction_prompt'];
+            legacyKeys.forEach(k => { if (settings[k] !== undefined) delete settings[k]; });
         }
+        
+        if (!settings.instructionPrompt || settings.instructionPrompt.trim() === "") settings.instructionPrompt = defaultPrompts.instructionPrompt;
+        if (!settings.matrix || settings.matrix.length === 0) settings.matrix = JSON.parse(JSON.stringify(defaultPrompts.defaultMatrix));
+
         applyDynamicCSSVars();
     }
 
@@ -79,6 +163,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         document.documentElement.style.setProperty('--cs-panel-width', `${settings.widget_width}vw`);
         document.documentElement.style.setProperty('--cs-modal-width', `${settings.modal_width}vw`);
         document.documentElement.style.setProperty('--cs-modal-height', `${settings.modal_height}vh`);
+        document.documentElement.style.setProperty('--cs-modal-start', `${settings.modal_start || 0}vh`);
         document.documentElement.style.setProperty('--cs-choices-height', `${settings.choice_block_max_height}vh`);
     }
 
@@ -88,12 +173,13 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         style.id = 'cs_custom_css';
         style.innerHTML = `
             .cs-modal-overlay { position: fixed; inset: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); z-index: 999999; display: flex; justify-content: center; align-items: center; padding: 12px; box-sizing: border-box; touch-action: pan-y; backdrop-filter: blur(4px); }
-            .cs-modal { position: relative; background: var(--SmartThemeBlurTintColor, #1e1e2e); border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 10px; width: var(--cs-modal-width, 95vw); max-width: 1400px; height: var(--cs-modal-height, 90vh); display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.9); color: var(--SmartThemeBodyColor, #fff); }
+            .cs-modal { margin-top: var(--cs-modal-start, 0vh); position: relative; background: var(--SmartThemeBlurTintColor, #1e1e2e); border: 1px solid var(--SmartThemeBorderColor, #444); border-radius: 10px; width: var(--cs-modal-width, 95vw); max-width: 1400px; height: var(--cs-modal-height, 90vh); max-height: calc(100vh - var(--cs-modal-start, 0vh) - 24px); display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.9); color: var(--SmartThemeBodyColor, #fff); }
             .cs-modal-header { flex: 0 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--SmartThemeBorderColor, #444); background: rgba(0,0,0,0.25); gap: 8px; flex-wrap: wrap; }
             .cs-modal-body { flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
             .cs-modal-footer { flex: 0 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-top: 1px solid var(--SmartThemeBorderColor, #444); background: rgba(0,0,0,0.25); gap: 10px; }
             
             .cs-touch-btn { touch-action: manipulation; -webkit-tap-highlight-color: transparent; cursor: pointer; user-select: none; }
+            .cs-load-more-btn { background: rgba(139, 92, 246, 0.2); border: 1px solid rgba(139, 92, 246, 0.5); padding: 12px; text-align: center; border-radius: 6px; font-weight: bold; margin-top: 10px; }
             
             .cs-filter-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; background: rgba(0,0,0,0.15); padding: 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); }
             .cs-stat-pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 12px; background: rgba(255,255,255,0.08); font-size: 0.78rem; font-family: monospace; color: #cbd5e1; }
@@ -200,19 +286,16 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         });
     }
 
-    // --- BULLETPROOF CHAT IDENTIFICATION LOGIC ---
     function getChatIdentification() {
         const liveContext = getContext();
         let chara_name = "Unknown_Character";
         let chat_name = "Unknown_Chat";
 
-        // 1. Precise HTML DOM Grab (Overrides everything)
         const domName = document.querySelector('.ch_name .name_text')?.innerText || document.getElementById('character_name_text')?.innerText;
         if (domName && domName.trim() && !domName.includes('${')) chara_name = domName.trim();
         else if (window.name2 && !window.name2.includes('${')) chara_name = window.name2;
         else if (liveContext.name2 && !liveContext.name2.includes('${')) chara_name = liveContext.name2;
 
-        // 2. Chat File Name Resolution
         if (liveContext.chatId) {
             chat_name = liveContext.chatId;
         } else if (window.chat_metadata?.chat_id) {
@@ -228,40 +311,31 @@ import { DEFAULT_SETTINGS } from './defaults.js';
             }
         }
 
-        // 3. Scrub SillyTavern default system names
         if (chara_name === "SillyTavern System" || chara_name === "System") chara_name = "System / Utility";
         if (!chat_name) chat_name = "Unknown_Chat";
 
         return { chara_name, chat_name };
     }
 
-    // --- DEEP SEARCH SUMMARY EXTRACTION ---
     function extractStorySummary() {
+        if (!settings.includeSummary) return "";
         const liveContext = getContext();
         let sum = "";
         
-        // 1. Direct Physical Extraction from Summarize Extension Textarea
         const memContents = document.getElementById('memory_contents');
-        if (memContents && memContents.value && memContents.value.trim().length > 0) {
-            sum = memContents.value.trim();
-        }
+        if (memContents && memContents.value && memContents.value.trim().length > 0) sum = memContents.value.trim();
 
-        // 2. ST internal API variables
         if (!sum && window.chat_metadata?.summary) sum = window.chat_metadata.summary;
         if (!sum && liveContext.chatMetadata?.summary) sum = liveContext.chatMetadata.summary;
         if (!sum && window.extension_settings?.summarize?.summary) sum = window.extension_settings.summarize.summary;
         if (!sum && liveContext.extensionSettings?.summarize?.summary) sum = liveContext.extensionSettings.summarize.summary;
         
-        // 3. Fallback scan inside chat blocks
         if (!sum && Array.isArray(liveContext.chat)) {
             for (let i = liveContext.chat.length - 1; i >= 0; i--) {
                 const mes = liveContext.chat[i]?.mes || "";
                 if (liveContext.chat[i].is_system && mes) {
                     const match = mes.match(/<summary>([\s\S]*?)<\/summary>/i);
-                    if (match) { 
-                        sum = match[1].trim(); 
-                        break; 
-                    }
+                    if (match) { sum = match[1].trim(); break; }
                     if (mes.includes("Summary:") || mes.includes("Story Summary:") || mes.includes("<memory>")) {
                         sum = mes.replace(/^Summary:/i, '').replace(/^Story Summary:/i, '').replace(/^<memory>/i, '').trim();
                         break;
@@ -269,22 +343,13 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                 }
             }
         }
-        
         return sum ? sum.trim() : "";
     }
 
     function generateUniqueId() {
         const d = new Date();
         const pad = (n, m=2) => String(n).padStart(m, '0');
-        const yy = String(d.getFullYear()).slice(-2);
-        const mm = pad(d.getMonth() + 1);
-        const dd = pad(d.getDate());
-        const hh = pad(d.getHours());
-        const mn = pad(d.getMinutes());
-        const ss = pad(d.getSeconds());
-        const ms = pad(d.getMilliseconds(), 3);
-        const hash = Math.random().toString(36).substring(2, 8).padEnd(6, '0');
-        return `${yy}${mm}${dd}${hh}${mn}${ss}${ms}_${hash}`;
+        return `${String(d.getFullYear()).slice(-2)}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}${pad(d.getMilliseconds(), 3)}_${Math.random().toString(36).substring(2, 8).padEnd(6, '0')}`;
     }
 
     function extractAIResponseContext() {
@@ -292,14 +357,11 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         const chat = liveContext.chat;
         if (!chat || chat.length === 0) return "No prior context.";
         for (let i = chat.length - 1; i >= 0; i--) {
-            if (!chat[i].is_user && !chat[i].is_system && chat[i].mes) {
-                return chat[i].mes;
-            }
+            if (!chat[i].is_user && !chat[i].is_system && chat[i].mes) return chat[i].mes;
         }
         return "No AI message found.";
     }
 
-    // --- UNIFIED DB ABSTRACTION ---
     function getApiHeaders() {
         let headers = { 'Content-Type': 'application/json' };
         try {
@@ -316,10 +378,10 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                 try {
                     payload.db_path = settings.custom_db_path || "";
                     await $.ajax({ url: `${API_BASE}/log`, type: 'POST', headers: getApiHeaders(), contentType: 'application/json', data: JSON.stringify(payload) });
-                    if(window.toastr) window.toastr.success(`Saved to Server DB successfully.`, "Choices");
+                    if(window.toastr) window.toastr.success(`Saved to Server DB.`, "Choices");
                 } catch (e) { 
                     log("API Log Error: " + e.responseText, 1); 
-                    if(window.toastr) window.toastr.error(`Server DB Error! Check console. Fallback to LocalDB recommended.`, "Backend Failure");
+                    if(window.toastr) window.toastr.error(`Server DB Error. Fallback to LocalDB recommended.`, "Backend Failure");
                 }
             } else {
                 if(!localDB) return;
@@ -331,7 +393,6 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                 const chatRecords = all.filter(r => r.chat_name === payload.chat_name);
                 payload.chat_num = chatRecords.length > 0 ? chatRecords[chatRecords.length - 1].chat_num + 1 : 1;
                 
-                // Enforce Schema
                 const orderedData = {
                     id: payload.id,
                     chara_name: payload.chara_name || "Unknown_Character",
@@ -346,7 +407,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                 };
                 
                 store.add(orderedData);
-                if(window.toastr) window.toastr.success(`Saved to LocalDB successfully.`, "Choices");
+                if(window.toastr) window.toastr.success(`Saved to LocalDB.`, "Choices");
             }
         },
         async getAll() {
@@ -355,7 +416,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                     const encodedPath = encodeURIComponent(settings.custom_db_path || "");
                     return await $.ajax({ url: `${API_BASE}/db?db_path=${encodedPath}`, type: 'GET', headers: getApiHeaders(), dataType: 'json' });
                 } catch (e) {
-                    if (e.status === 404 && window.toastr) window.toastr.error("Choice Stream backend not found! Please run the Python installer script.", "Backend Error");
+                    if (e.status === 404 && window.toastr) window.toastr.error("Choice Stream backend not found! Please run the Python script.", "Backend Error");
                     return [];
                 }
             } else {
@@ -388,104 +449,20 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                     all.filter(r => r.status === type).forEach(r => store.delete(r.id));
                 }
             }
-        },
-        async importData(records) {
-            if (settings.storageMode === 'server') {
-                try { await $.ajax({ url: `${API_BASE}/import`, type: 'POST', headers: getApiHeaders(), contentType: 'application/json', data: JSON.stringify({ records: records, db_path: settings.custom_db_path || "" }) }); } catch (e) {}
-            } else {
-                if(!localDB) return;
-                let all = await this.getAll();
-                let currentGlobal = all.length > 0 ? all[all.length - 1].global_num : 0;
-                
-                const tx = localDB.transaction("logs", "readwrite");
-                const store = tx.objectStore("logs");
-                for(let payload of records) {
-                    currentGlobal++;
-                    const chatRecords = all.filter(r => r.chat_name === payload.chat_name);
-                    const chat_num = chatRecords.length > 0 ? chatRecords[chatRecords.length - 1].chat_num + 1 : 1;
-                    
-                    const orderedData = {
-                        id: payload.id,
-                        chara_name: payload.chara_name || "Unknown_Character",
-                        chat_name: payload.chat_name || "Unknown_Chat",
-                        global_num: currentGlobal,
-                        chat_num: chat_num,
-                        status: payload.status,
-                        ai_context: payload.ai_context || "",
-                        story_summary: payload.story_summary || "",
-                        custom_direction: payload.custom_direction || "",
-                        data: payload.data || ""
-                    };
-
-                    all.push(orderedData); 
-                    store.add(orderedData);
-                }
-            }
         }
     };
-
-    // --- IMPORT/EXPORT UI ---
-    async function handleExport() {
-        const logs = await DB.getAll();
-        if (!logs || logs.length === 0) return alert("No log data available to export.");
-        
-        const blob = new Blob([JSON.stringify(logs, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.download = `st_choices_dataset_${Date.now()}.json`;
-        a.href = url;
-        a.click();
-        URL.revokeObjectURL(url);
-    }
-
-    function handleImport() {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = '.json,.jsonl';
-        input.onchange = e => {
-            const file = e.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = async event => {
-                try {
-                    const text = event.target.result;
-                    let records = [];
-                    if (file.name.endsWith('.jsonl')) {
-                        records = text.split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
-                    } else {
-                        records = JSON.parse(text);
-                        if (!Array.isArray(records)) throw new Error("JSON must be an array of objects");
-                    }
-                    if (window.toastr) window.toastr.info(`Importing ${records.length} records...`, "Importing");
-                    await DB.importData(records);
-                    if (window.toastr) window.toastr.success(`Import complete!`, "Success");
-                } catch (err) {
-                    if (window.toastr) window.toastr.error("Invalid file format", "Import Failed");
-                }
-            };
-            reader.readAsText(file);
-        };
-        input.click();
-    }
 
     function bindTapClose(element, callback) {
         if (!element) return;
         let touched = false;
         element.addEventListener('touchend', (e) => {
-            touched = true;
-            e.preventDefault();
-            e.stopPropagation();
-            callback();
+            touched = true; e.preventDefault(); e.stopPropagation(); callback();
         }, { passive: false });
         element.addEventListener('click', (e) => {
-            if (touched) { touched = false; return; }
-            e.preventDefault();
-            e.stopPropagation();
-            callback();
+            if (touched) { touched = false; return; } e.preventDefault(); e.stopPropagation(); callback();
         });
     }
 
-    // --- MODALS ---
     async function showHistoryModal(filterChat = "__ALL__", searchKeyword = "") {
         if (document.getElementById('cs_history_modal')) document.getElementById('cs_history_modal').remove();
         
@@ -493,7 +470,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         modalOverlay.id = 'cs_history_modal';
         modalOverlay.className = 'cs-modal-overlay';
         
-        const { chara_name, chat_name } = getChatIdentification();
+        const { chat_name } = getChatIdentification();
         let allRecords = await DB.getAll();
         
         let allClusters = allRecords.filter(r => r.status === "SUCCESS");
@@ -505,12 +482,11 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         });
 
         let filtered = allClusters;
-        if (filterChat !== "__ALL__") {
-            filtered = filtered.filter(c => c.chat_name === filterChat);
-        }
+        if (filterChat !== "__ALL__") filtered = filtered.filter(c => c.chat_name === filterChat);
         if (searchKeyword.trim() !== "") {
             const kw = searchKeyword.toLowerCase();
             filtered = filtered.filter(c => 
+                (c.chat_name && c.chat_name.toLowerCase().includes(kw)) || 
                 (c.chara_name && c.chara_name.toLowerCase().includes(kw)) || 
                 (c.data && Array.isArray(c.data) && c.data.some(choice => choice.toLowerCase().includes(kw))) ||
                 (c.custom_direction && c.custom_direction.toLowerCase().includes(kw)) ||
@@ -519,49 +495,79 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         }
 
         let chatOptionsHtml = `<option value="__ALL__" ${filterChat === '__ALL__' ? 'selected' : ''}>All Chats (${allClusters.length} saves)</option>`;
-        
-        // Ensure string casting to prevent localeCompare crashes on malformed legacy data
         const chatKeysArr = Object.keys(chatKeysMap).sort((a,b) => {
             if (a === chat_name) return -1;
             if (b === chat_name) return 1;
-            const nameA = String(chatKeysMap[a] || a || "");
-            const nameB = String(chatKeysMap[b] || b || "");
-            return nameA.localeCompare(nameB);
+            return a.localeCompare(b);
         });
         
         chatKeysArr.forEach(cId => {
             const isCurr = cId === chat_name ? '★ [Current] ' : '';
             const count = allClusters.filter(c => c.chat_name === cId).length;
-            const dispName = chatKeysMap[cId] || cId;
-            chatOptionsHtml += `<option value="${cId}" ${filterChat === cId ? 'selected' : ''}>${isCurr}${dispName} (${count})</option>`;
+            chatOptionsHtml += `<option value="${cId}" ${filterChat === cId ? 'selected' : ''}>${isCurr}${cId} (${count})</option>`;
         });
 
-        let bodyHtml = "";
-        if (filtered.length === 0) {
-            bodyHtml = `<div style="text-align:center; padding: 40px 10px; color: rgba(255,255,255,0.4);">No saved choice history matches the criteria.</div>`;
-        } else {
-            filtered.forEach(cluster => {
+        modalOverlay.innerHTML = `
+            <div class="cs-modal">
+                <div class="cs-modal-header">
+                    <span style="font-size:1.1rem;"><i class="fa-solid fa-clock-rotate-left"></i> Choice Database</span>
+                    <div style="display:flex; gap:8px;">
+                        <button id="cs_hist_clearall_btn" class="menu_button cs-touch-btn margin0" style="color:#ef4444;"><i class="fa-solid fa-trash"></i> Wipe DB</button>
+                        <button id="cs_hist_head_close" class="menu_button cs-touch-btn margin0" style="background:rgba(239,68,68,0.2);"><i class="fa-solid fa-xmark"></i> Close</button>
+                    </div>
+                </div>
+                <div style="padding:10px 12px; flex:0 0 auto;">
+                    <div class="cs-filter-bar">
+                        <select id="cs_hist_chat_select" class="text_pole" style="flex:1; min-width:180px;">${chatOptionsHtml}</select>
+                        <input type="text" id="cs_hist_search_input" class="text_pole" placeholder="Search keywords..." value="${searchKeyword}" style="flex:1; min-width:140px;">
+                    </div>
+                </div>
+                <div id="cs_hist_body" class="cs-modal-body"></div>
+                <div class="cs-modal-footer">
+                    <div style="font-size:0.85rem; color:#94a3b8;">Showing <b id="cs_hist_count">0</b> of <b>${allClusters.length}</b> records</div>
+                    <button id="cs_hist_foot_close" class="menu_button cs-touch-btn margin0" style="min-width:100px; font-weight:bold;"><i class="fa-solid fa-check"></i> Close</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modalOverlay);
+
+        const bodyContainer = document.getElementById('cs_hist_body');
+        const countDisplay = document.getElementById('cs_hist_count');
+        
+        let currentIndex = 0;
+        const CHUNK_SIZE = 15;
+        let loadMoreBtn = document.createElement('div');
+        loadMoreBtn.className = "cs-load-more-btn cs-touch-btn";
+        loadMoreBtn.innerHTML = "<i class='fa-solid fa-angles-down'></i> Load More";
+        loadMoreBtn.onclick = () => renderChunk();
+
+        function renderChunk() {
+            if (filtered.length === 0) {
+                bodyContainer.innerHTML = `<div style="text-align:center; padding: 40px 10px; color: rgba(255,255,255,0.4);">No saved choice history matches the criteria.</div>`;
+                return;
+            }
+
+            const slice = filtered.slice(currentIndex, currentIndex + CHUNK_SIZE);
+            let chunkHtml = "";
+            
+            slice.forEach(cluster => {
                 const choicesArray = Array.isArray(cluster.data) ? cluster.data : (cluster.choices || []);
                 const totalWords = choicesArray.reduce((acc, c) => acc + (c.trim() ? c.trim().split(/\s+/).length : 0), 0);
-                const totalChars = choicesArray.reduce((acc, c) => acc + c.length, 0);
-                
                 const rawId = cluster.id || "Unknown";
                 const displayId = rawId.includes('_') ? rawId.split('_')[0] : rawId;
 
-                bodyHtml += `
+                chunkHtml += `
                     <div class="cs-history-cluster" data-id="${cluster.id}">
                         <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:6px;">
                             <div style="display:flex; flex-direction:column; gap:4px;">
                                 <div style="font-weight:bold; font-size:0.95rem; color:#a78bfa;">
-                                    ${cluster.chara_name} 
-                                    ${cluster.chat_name === chat_name ? '<span style="color:#10b981; font-size:0.75rem; font-weight:normal;">(Active Chat)</span>' : ''}
+                                    ${cluster.chat_name} <span style="font-size:0.75rem; color:#94a3b8; font-weight:normal;">(${cluster.chara_name})</span>
                                 </div>
                                 <div style="display:flex; gap:6px; flex-wrap:wrap;">
                                     <span class="cs-stat-pill" title="Global DB Num">G# ${cluster.global_num}</span>
-                                    <span class="cs-stat-pill" title="Chat-Specific Generation ID">C# ${cluster.chat_num}</span>
                                     <span class="cs-stat-pill" title="Timestamp ID"><i class="fa-solid fa-clock"></i> ${displayId}</span>
                                     <span class="cs-stat-pill" style="color:#38bdf8;"><i class="fa-solid fa-list-ol"></i> ${choicesArray.length} options</span>
-                                    <span class="cs-stat-pill"><i class="fa-solid fa-font"></i> ${totalWords}w / ${totalChars}c</span>
+                                    <span class="cs-stat-pill"><i class="fa-solid fa-font"></i> ${totalWords}w</span>
                                 </div>
                                 ${cluster.custom_direction ? `<div style="font-size:0.8rem; color:#f472b6;"><b>Direction:</b> "${cluster.custom_direction}"</div>` : ''}
                             </div>
@@ -571,16 +577,11 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                             </div>
                         </div>
 
-                        ${cluster.ai_context ? `
-                        <div style="font-size: 0.82rem; color: #cbd5e1; margin-top: 6px; margin-bottom: 6px; font-style: italic; border-left: 2px solid #64748b; padding-left: 6px;">
-                            ${formatPreview(cluster.ai_context, 100, 40).replace(/</g, '&lt;')}
-                        </div>` : ''}
-
-                        <div class="cs-cluster-preview" style="font-size:0.88rem; opacity:0.85; cursor:pointer;">
-                            ${choicesArray.map((c, i) => `<div><span style="color:#8b5cf6;">[${i+1}]</span> ${formatPreview(c, 80, 40).replace(/</g, '&lt;')}</div>`).join('')}
+                        <div class="cs-cluster-preview" style="font-size:0.88rem; opacity:0.85; margin-top:8px;">
+                            ${choicesArray.map((c, i) => `<div><span style="color:#8b5cf6;">[${i+1}]</span> ${formatPreview(c).replace(/</g, '&lt;')}</div>`).join('')}
                         </div>
 
-                        <div class="cs-toggle-inspect" style="font-size:0.8rem; color:#8b5cf6; cursor:pointer; text-decoration:underline;">
+                        <div class="cs-toggle-inspect" style="font-size:0.8rem; color:#8b5cf6; cursor:pointer; text-decoration:underline; margin-top:6px;">
                             <i class="fa-solid fa-chevron-down"></i> Inspect Full Options & Context
                         </div>
 
@@ -588,58 +589,91 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                             ${cluster.ai_context ? `
                             <div style="font-size:0.8rem; background:rgba(0,0,0,0.3); padding:8px; border-radius:4px; border-left:3px solid #8b5cf6;">
                                 <b style="color:#a78bfa;">AI Context Snippet:</b>
-                                <div style="margin-top:4px; max-height:80px; overflow-y:auto; opacity:0.85;">${cluster.ai_context.replace(/</g, '&lt;')}</div>
+                                <div style="margin-top:4px; max-height:80px; overflow-y:auto; opacity:0.85;">${formatPreview(cluster.ai_context).replace(/</g, '&lt;')}</div>
                             </div>` : ''}
                             
-                            ${choicesArray.map((c, i) => {
-                                const w = c.trim().split(/\s+/).length;
-                                return `
-                                    <div class="cs-single-option">
-                                        <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:0.8rem; color:#94a3b8;">
-                                            <span><b>Option ${i+1}</b> (${w} words, ${c.length} chars)</span>
-                                            <div style="display:flex; gap:6px;">
-                                                <button class="cs-copy-single-btn menu_button cs-touch-btn margin0" data-text="${encodeURIComponent(c)}" style="padding:2px 6px; font-size:0.75rem;"><i class="fa-solid fa-copy"></i> Copy</button>
-                                                <button class="cs-insert-single-btn menu_button cs-touch-btn margin0" data-text="${encodeURIComponent(c)}" style="padding:2px 6px; font-size:0.75rem; color:#10b981;"><i class="fa-solid fa-pen-to-square"></i> Send to Input</button>
-                                            </div>
+                            ${choicesArray.map((c, i) => `
+                                <div class="cs-single-option">
+                                    <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:0.8rem; color:#94a3b8;">
+                                        <span><b>Option ${i+1}</b></span>
+                                        <div style="display:flex; gap:6px;">
+                                            <button class="cs-copy-single-btn menu_button cs-touch-btn margin0" data-text="${encodeURIComponent(c)}" style="padding:2px 6px; font-size:0.75rem;"><i class="fa-solid fa-copy"></i> Copy</button>
+                                            <button class="cs-insert-single-btn menu_button cs-touch-btn margin0" data-text="${encodeURIComponent(c)}" style="padding:2px 6px; font-size:0.75rem; color:#10b981;"><i class="fa-solid fa-pen-to-square"></i> Send</button>
                                         </div>
-                                        <div>${c.replace(/</g, '&lt;')}</div>
                                     </div>
-                                `;
-                            }).join('')}
+                                    <div>${c.replace(/</g, '&lt;')}</div>
+                                </div>
+                            `).join('')}
                         </div>
                     </div>
                 `;
             });
+            
+            if(loadMoreBtn.parentNode) loadMoreBtn.parentNode.removeChild(loadMoreBtn);
+            bodyContainer.insertAdjacentHTML('beforeend', chunkHtml);
+            
+            currentIndex += CHUNK_SIZE;
+            countDisplay.innerText = Math.min(currentIndex, filtered.length);
+            
+            if (currentIndex < filtered.length) {
+                bodyContainer.appendChild(loadMoreBtn);
+            }
         }
+        renderChunk();
 
-        modalOverlay.innerHTML = `
-            <div class="cs-modal">
-                <div class="cs-modal-header">
-                    <span style="font-size:1.1rem;"><i class="fa-solid fa-clock-rotate-left"></i> Choice Database</span>
-                    <div style="display:flex; gap:8px;">
-                        <button id="cs_hist_download_btn" class="menu_button cs-touch-btn margin0" title="Export Dataset"><i class="fa-solid fa-file-export"></i> Export</button>
-                        <button id="cs_hist_import_btn" class="menu_button cs-touch-btn margin0" title="Import Dataset"><i class="fa-solid fa-file-import"></i> Import</button>
-                        <button id="cs_hist_clearall_btn" class="menu_button cs-touch-btn margin0" style="color:#ef4444;"><i class="fa-solid fa-trash"></i> Wipe DB</button>
-                        <button id="cs_hist_head_close" class="menu_button cs-touch-btn margin0" style="background:rgba(239,68,68,0.2);"><i class="fa-solid fa-xmark"></i> Close</button>
-                    </div>
-                </div>
+        bodyContainer.addEventListener('click', async (e) => {
+            const toggle = e.target.closest('.cs-toggle-inspect');
+            if (toggle) {
+                const details = toggle.nextElementSibling;
+                const isOpen = details.style.display === 'flex';
+                details.style.display = isOpen ? 'none' : 'flex';
+                toggle.innerHTML = isOpen ? '<i class="fa-solid fa-chevron-down"></i> Inspect Full Options & Context' : '<i class="fa-solid fa-chevron-up"></i> Hide Full Options';
+                return;
+            }
 
-                <div style="padding:10px 12px; flex:0 0 auto;">
-                    <div class="cs-filter-bar">
-                        <select id="cs_hist_chat_select" class="text_pole" style="flex:1; min-width:180px;">${chatOptionsHtml}</select>
-                        <input type="text" id="cs_hist_search_input" class="text_pole" placeholder="Search keywords..." value="${searchKeyword}" style="flex:1; min-width:140px;">
-                    </div>
-                </div>
+            const loadBtn = e.target.closest('.cs-load-cluster-btn');
+            if (loadBtn) {
+                const id = loadBtn.closest('.cs-history-cluster').getAttribute('data-id');
+                const cluster = filtered.find(c => c.id === id);
+                if (cluster && cluster.data) renderChoices(cluster.data);
+                closeModal();
+                return;
+            }
 
-                <div class="cs-modal-body">${bodyHtml}</div>
+            const delBtn = e.target.closest('.cs-del-cluster-btn');
+            if (delBtn) {
+                const id = delBtn.closest('.cs-history-cluster').getAttribute('data-id');
+                await DB.delete(id);
+                showHistoryModal($('#cs_hist_chat_select').val(), $('#cs_hist_search_input').val());
+                return;
+            }
 
-                <div class="cs-modal-footer">
-                    <div style="font-size:0.85rem; color:#94a3b8;">Showing <b>${filtered.length}</b> of <b>${allClusters.length}</b> clusters</div>
-                    <button id="cs_hist_foot_close" class="menu_button cs-touch-btn margin0" style="min-width:100px; font-weight:bold;"><i class="fa-solid fa-check"></i> Close</button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(modalOverlay);
+            const copyBtn = e.target.closest('.cs-copy-single-btn');
+            if (copyBtn) {
+                const text = decodeURIComponent(copyBtn.getAttribute('data-text'));
+                navigator.clipboard.writeText(text).then(() => {
+                    const oldHtml = copyBtn.innerHTML;
+                    copyBtn.innerHTML = `<i class="fa-solid fa-check"></i>`;
+                    copyBtn.style.color = '#10b981';
+                    setTimeout(() => { copyBtn.innerHTML = oldHtml; copyBtn.style.color = ''; }, 1500);
+                });
+                return;
+            }
+
+            const insertBtn = e.target.closest('.cs-insert-single-btn');
+            if (insertBtn) {
+                const text = decodeURIComponent(insertBtn.getAttribute('data-text'));
+                if (!DOM_textarea) DOM_textarea = document.getElementById("send_textarea");
+                if (DOM_textarea) {
+                    DOM_textarea.value = text;
+                    lastInsertedText = text;
+                    DOM_textarea.dispatchEvent(new Event("input", { bubbles: true }));
+                    DOM_textarea.focus();
+                }
+                closeModal();
+                return;
+            }
+        });
 
         const closeModal = () => modalOverlay.remove();
         bindTapClose(document.getElementById('cs_hist_head_close'), closeModal);
@@ -650,67 +684,9 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         $('#cs_hist_search_input').on('input', function() {
             const val = this.value;
             clearTimeout(window.__cs_search_timer);
-            window.__cs_search_timer = setTimeout(() => { showHistoryModal($('#cs_hist_chat_select').val(), val); }, 300);
+            window.__cs_search_timer = setTimeout(() => { showHistoryModal($('#cs_hist_chat_select').val(), val); }, 1000);
         });
 
-        modalOverlay.querySelectorAll('.cs-toggle-inspect').forEach(el => {
-            el.onclick = () => {
-                const details = el.nextElementSibling;
-                const isOpen = details.style.display === 'flex';
-                details.style.display = isOpen ? 'none' : 'flex';
-                el.innerHTML = isOpen 
-                    ? '<i class="fa-solid fa-chevron-down"></i> Inspect Full Options & Context'
-                    : '<i class="fa-solid fa-chevron-up"></i> Hide Full Options';
-            };
-        });
-
-        modalOverlay.querySelectorAll('.cs-load-cluster-btn').forEach(btn => {
-            btn.onclick = () => {
-                const id = btn.closest('.cs-history-cluster').getAttribute('data-id');
-                const cluster = filtered.find(c => c.id === id);
-                if (cluster && cluster.data) renderChoices(cluster.data);
-                else if (cluster && cluster.choices) renderChoices(cluster.choices);
-                closeModal();
-            };
-        });
-
-        modalOverlay.querySelectorAll('.cs-del-cluster-btn').forEach(btn => {
-            btn.onclick = async () => {
-                const id = btn.closest('.cs-history-cluster').getAttribute('data-id');
-                await DB.delete(id);
-                showHistoryModal($('#cs_hist_chat_select').val(), $('#cs_hist_search_input').val());
-            };
-        });
-
-        modalOverlay.querySelectorAll('.cs-copy-single-btn').forEach(btn => {
-            btn.onclick = () => {
-                const text = decodeURIComponent(btn.getAttribute('data-text'));
-                navigator.clipboard.writeText(text).then(() => {
-                    const oldHtml = btn.innerHTML;
-                    btn.innerHTML = `<i class="fa-solid fa-check"></i> Copied!`;
-                    btn.style.color = '#10b981';
-                    setTimeout(() => { btn.innerHTML = oldHtml; btn.style.color = ''; }, 1500);
-                });
-            };
-        });
-
-        modalOverlay.querySelectorAll('.cs-insert-single-btn').forEach(btn => {
-            btn.onclick = () => {
-                const text = decodeURIComponent(btn.getAttribute('data-text'));
-                if (!DOM_textarea) DOM_textarea = document.getElementById("send_textarea");
-                if (DOM_textarea) {
-                    DOM_textarea.value = text;
-                    lastInsertedText = text;
-                    DOM_textarea.dispatchEvent(new Event("input", { bubbles: true }));
-                    DOM_textarea.focus();
-                }
-                closeModal();
-            };
-        });
-
-        document.getElementById('cs_hist_download_btn').onclick = handleExport;
-        document.getElementById('cs_hist_import_btn').onclick = () => { handleImport(); setTimeout(()=>showHistoryModal(), 2000); };
-        
         document.getElementById('cs_hist_clearall_btn').onclick = async () => {
             if (confirm("WARNING: This will permanently delete ALL successful choice history records.\n\nProceed?")) {
                 if (confirm("SECOND CONFIRMATION:\n\nAre you absolutely sure? This CANNOT be undone.")) {
@@ -732,44 +708,6 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         const fails = allRecords.filter(r => r.status === "FAIL");
         fails.sort((a,b) => (b.global_num || 0) - (a.global_num || 0));
 
-        let bodyHtml = "";
-        if (fails.length === 0) {
-            bodyHtml = `<div style="text-align:center; padding: 40px 10px; color: rgba(255,255,255,0.4);">No unparsed LLM responses recorded. Everything is parsing smoothly!</div>`;
-        } else {
-            fails.forEach(fail => {
-                const rawString = typeof fail.data === 'string' ? fail.data : (fail.raw_response || "");
-                const wordCount = rawString.trim().split(/\s+/).length;
-                const rawId = fail.id || "Unknown";
-                const displayId = rawId.includes('_') ? rawId.split('_')[0] : rawId;
-
-                bodyHtml += `
-                    <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.07); border-radius:6px; padding:10px;">
-                        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
-                            <div>
-                                <b style="color:#ef4444;">${fail.chara_name}</b>
-                                <div style="display:flex; gap:6px; margin-top:3px; flex-wrap:wrap;">
-                                    <span class="cs-stat-pill" title="Global DB Num">G# ${fail.global_num}</span>
-                                    <span class="cs-stat-pill" title="Timestamp ID"><i class="fa-solid fa-clock"></i> ${displayId}</span>
-                                    <span class="cs-stat-pill">${wordCount} words / ${rawString.length} chars</span>
-                                </div>
-                            </div>
-                            <div style="display:flex; gap:8px;">
-                                <button class="menu_button cs-touch-btn cs-fail-copy-btn margin0" data-text="${encodeURIComponent(rawString)}"><i class="fa-solid fa-copy"></i> Copy Raw</button>
-                                <button class="menu_button cs-touch-btn cs-fail-del-btn margin0" data-id="${fail.id}" style="color:#ef4444;"><i class="fa-solid fa-trash"></i></button>
-                            </div>
-                        </div>
-
-                        ${fail.ai_context ? `
-                        <div style="font-size: 0.82rem; color: #cbd5e1; margin-bottom: 8px; font-style: italic; border-left: 2px solid #ef4444; padding-left: 6px;">
-                            <b>Failed context snippet:</b> "${formatPreview(fail.ai_context, 100, 40).replace(/</g, '&lt;')}"
-                        </div>` : ''}
-
-                        <div class="cs-failed-item">${rawString.replace(/</g, '&lt;')}</div>
-                    </div>
-                `;
-            });
-        }
-
         modalOverlay.innerHTML = `
             <div class="cs-modal">
                 <div class="cs-modal-header">
@@ -779,41 +717,99 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                         <button id="cs_fail_head_close" class="menu_button cs-touch-btn margin0" style="background:rgba(239,68,68,0.2);"><i class="fa-solid fa-xmark"></i> Close</button>
                     </div>
                 </div>
-
-                <div class="cs-modal-body">${bodyHtml}</div>
-
+                <div id="cs_fail_body" class="cs-modal-body"></div>
                 <div class="cs-modal-footer">
-                    <div style="font-size:0.85rem; color:#94a3b8;">Copy readable sections directly into your story.</div>
+                    <div style="font-size:0.85rem; color:#94a3b8;">Showing <b id="cs_fail_count">0</b> fails.</div>
                     <button id="cs_fail_foot_close" class="menu_button cs-touch-btn margin0" style="min-width:100px; font-weight:bold;"><i class="fa-solid fa-check"></i> Close</button>
                 </div>
             </div>
         `;
         document.body.appendChild(modalOverlay);
 
+        const bodyContainer = document.getElementById('cs_fail_body');
+        const countDisplay = document.getElementById('cs_fail_count');
+
+        let currentIndex = 0;
+        const CHUNK_SIZE = 15;
+        let loadMoreBtn = document.createElement('div');
+        loadMoreBtn.className = "cs-load-more-btn cs-touch-btn";
+        loadMoreBtn.innerHTML = "<i class='fa-solid fa-angles-down'></i> Load More";
+        loadMoreBtn.onclick = () => renderChunk();
+
+        function renderChunk() {
+            if (fails.length === 0) {
+                bodyContainer.innerHTML = `<div style="text-align:center; padding: 40px 10px; color: rgba(255,255,255,0.4);">No unparsed LLM responses recorded. Everything is parsing smoothly!</div>`;
+                return;
+            }
+
+            const slice = fails.slice(currentIndex, currentIndex + CHUNK_SIZE);
+            let chunkHtml = "";
+
+            slice.forEach(fail => {
+                const rawString = typeof fail.data === 'string' ? fail.data : (fail.raw_response || "");
+                const wordCount = rawString.trim().split(/\s+/).length;
+                const rawId = fail.id || "Unknown";
+                const displayId = rawId.includes('_') ? rawId.split('_')[0] : rawId;
+
+                chunkHtml += `
+                    <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.07); border-radius:6px; padding:10px;">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
+                            <div>
+                                <b style="color:#ef4444;">${fail.chat_name}</b> <span style="font-size:0.75rem; color:#94a3b8;">(${fail.chara_name})</span>
+                                <div style="display:flex; gap:6px; margin-top:3px; flex-wrap:wrap;">
+                                    <span class="cs-stat-pill" title="Global DB Num">G# ${fail.global_num}</span>
+                                    <span class="cs-stat-pill" title="Timestamp ID"><i class="fa-solid fa-clock"></i> ${displayId}</span>
+                                    <span class="cs-stat-pill">${wordCount} words</span>
+                                </div>
+                            </div>
+                            <div style="display:flex; gap:8px;">
+                                <button class="menu_button cs-touch-btn cs-fail-copy-btn margin0" data-text="${encodeURIComponent(rawString)}"><i class="fa-solid fa-copy"></i> Copy</button>
+                                <button class="menu_button cs-touch-btn cs-fail-del-btn margin0" data-id="${fail.id}" style="color:#ef4444;"><i class="fa-solid fa-trash"></i></button>
+                            </div>
+                        </div>
+                        ${fail.ai_context ? `<div style="font-size: 0.82rem; color: #cbd5e1; margin-bottom: 8px; font-style: italic; border-left: 2px solid #ef4444; padding-left: 6px;">
+                            <b>Failed context snippet:</b> "${formatPreview(fail.ai_context).replace(/</g, '&lt;')}"
+                        </div>` : ''}
+                        <div class="cs-failed-item">${rawString.replace(/</g, '&lt;')}</div>
+                    </div>
+                `;
+            });
+            
+            if(loadMoreBtn.parentNode) loadMoreBtn.parentNode.removeChild(loadMoreBtn);
+            bodyContainer.insertAdjacentHTML('beforeend', chunkHtml);
+            
+            currentIndex += CHUNK_SIZE;
+            countDisplay.innerText = Math.min(currentIndex, fails.length);
+            
+            if (currentIndex < fails.length) bodyContainer.appendChild(loadMoreBtn);
+        }
+        renderChunk();
+
+        bodyContainer.addEventListener('click', async (e) => {
+            const copyBtn = e.target.closest('.cs-fail-copy-btn');
+            if (copyBtn) {
+                const text = decodeURIComponent(copyBtn.getAttribute('data-text'));
+                navigator.clipboard.writeText(text).then(() => {
+                    const oldHtml = copyBtn.innerHTML;
+                    copyBtn.innerHTML = `<i class="fa-solid fa-check"></i>`;
+                    copyBtn.style.color = '#10b981';
+                    setTimeout(() => { copyBtn.innerHTML = oldHtml; copyBtn.style.color = ''; }, 1500);
+                });
+                return;
+            }
+            const delBtn = e.target.closest('.cs-fail-del-btn');
+            if (delBtn) {
+                const id = delBtn.getAttribute('data-id');
+                await DB.delete(id);
+                showFailedModal();
+                return;
+            }
+        });
+
         const closeModal = () => modalOverlay.remove();
         bindTapClose(document.getElementById('cs_fail_head_close'), closeModal);
         bindTapClose(document.getElementById('cs_fail_foot_close'), closeModal);
         modalOverlay.addEventListener('click', (e) => { if (e.target === modalOverlay) closeModal(); });
-
-        modalOverlay.querySelectorAll('.cs-fail-copy-btn').forEach(btn => {
-            btn.onclick = () => {
-                const text = decodeURIComponent(btn.getAttribute('data-text'));
-                navigator.clipboard.writeText(text).then(() => {
-                    const oldHtml = btn.innerHTML;
-                    btn.innerHTML = `<i class="fa-solid fa-check"></i> Copied!`;
-                    btn.style.color = '#10b981';
-                    setTimeout(() => { btn.innerHTML = oldHtml; btn.style.color = ''; }, 1500);
-                });
-            };
-        });
-
-        modalOverlay.querySelectorAll('.cs-fail-del-btn').forEach(btn => {
-            btn.onclick = async () => {
-                const id = btn.getAttribute('data-id');
-                await DB.delete(id);
-                showFailedModal();
-            };
-        });
 
         document.getElementById('cs_fail_clearall_btn').onclick = async () => {
             if (confirm("WARNING: This will permanently delete ALL failed parse records.\n\nProceed?")) {
@@ -893,16 +889,13 @@ import { DEFAULT_SETTINGS } from './defaults.js';
             document.removeEventListener('touchend', onDragEnd);
             
             if (!isDragging) {
-                if (e.type === 'touchend' && e.cancelable) {
-                    e.preventDefault(); 
-                }
+                if (e.type === 'touchend' && e.cancelable) e.preventDefault(); 
                 
                 if (panel.classList.contains('is-open')) {
                     panel.classList.remove('is-open');
                     input.blur();
                 } else {
                     panel.classList.add('is-open');
-                    setTimeout(() => input.focus(), 15); 
                 }
             } else {
                 settings.widget_left = widget.style.left;
@@ -1071,8 +1064,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                 }
             }
 
-            const formattedSummary = storySummary ? `### STORY SUMMARY ###\n${storySummary}` : "";
-            compiledPrompt = formattedSummary ? `${formattedSummary}\n\n${stInstruction}` : stInstruction;
+            compiledPrompt = stInstruction;
             
             rawResponse = await executeWithRetry(() => fetchRaw(compiledPrompt), 1, 3000);
             choices = parseLLMArray(rawResponse);
@@ -1098,7 +1090,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                     chat_name: chat_name,
                     status: isSuccess ? "SUCCESS" : "FAIL",
                     ai_context: extractAIResponseContext(),
-                    story_summary: storySummary,
+                    story_summary: storySummary, 
                     custom_direction: customDirection.trim(),
                     data: isSuccess ? choices : rawResponse
                 };
@@ -1333,7 +1325,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
     }
 
     function renderSettingsMenu() {
-        if (document.getElementById("cs_active")) return true; 
+        if (document.getElementById("cs_active_setting_row")) return true; 
         const target = document.getElementById("extensions_settings") || document.getElementById("extensions_settings2");
         if (!target) return false;
 
@@ -1341,19 +1333,23 @@ import { DEFAULT_SETTINGS } from './defaults.js';
             <div id="cs--settings" class="extension_container">
                 <div class="cs-drawer">
                     <div class="inline-drawer-toggle inline-drawer-header cs-drawer-toggle interactable" tabindex="0" role="button">
-                        <b>Narrative Choice Stream</b>
+                        <b>Narrative Choice Stream v${MODULE_VERSION}</b>
                         <div class="inline-drawer-icon fa-solid interactable down fa-circle-chevron-down" tabindex="0" role="button"></div>
                     </div>
                     <div class="cs-drawer-content" style="display: none; padding-top: 10px;">
                         
-                        <div class="flex-container marginBot5 justifySpaceBetween">
-                            <label class="checkbox_label flex-container">
+                        <div id="cs_active_setting_row" class="flex-container marginBot5 justifySpaceBetween">
+                            <label class="checkbox_label flex-container" title="Automatically generate choices after AI replies">
                                 <input type="checkbox" id="cs_active" ${settings.enabled ? "checked" : ""}>
-                                <span>Auto-generate Choices</span>
+                                <span>Auto-Gen Choices</span>
                             </label>
-                            <label class="checkbox_label flex-container">
+                            <label class="checkbox_label flex-container" title="Skip generation if you interrupted the AI">
                                 <input type="checkbox" id="cs_skip_interrupt" ${settings.skipInterrupted ? "checked" : ""}>
                                 <span>Skip on Interrupt</span>
+                            </label>
+                            <label class="checkbox_label flex-container" title="Enable Console Logging for debugging Prompts & Outputs">
+                                <input type="checkbox" id="cs_debug_mode" ${settings.debugMode ? "checked" : ""}>
+                                <span>Console Logging</span>
                             </label>
                         </div>
                         
@@ -1384,8 +1380,12 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                             <input type="range" id="cs_width_modal" style="flex:1;" value="${settings.modal_width}" min="50" max="100">
                         </div>
                         <div class="flex-container alignitemscenter marginBot5">
-                            <label style="flex:1;">Menus Height: <span id="cs_height_modal_val">${settings.modal_height}</span>vh</label>
+                            <label style="flex:1;" title="Overall maximum height of the modal">Menus Max Height: <span id="cs_height_modal_val">${settings.modal_height}</span>vh</label>
                             <input type="range" id="cs_height_modal" style="flex:1;" value="${settings.modal_height}" min="50" max="100">
+                        </div>
+                        <div class="flex-container alignitemscenter marginBot5">
+                            <label style="flex:1;" title="Offsetting the start allows you to place menus lower for easier phone thumb-reach.">Menus Starting Offset (Top): <span id="cs_start_modal_val">${settings.modal_start || 0}</span>vh</label>
+                            <input type="range" id="cs_start_modal" style="flex:1;" value="${settings.modal_start || 0}" min="0" max="50">
                         </div>
 
                         <div class="flex-container alignitemscenter marginBot5">
@@ -1419,7 +1419,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                         
                         <div class="flex-container alignitemscenter marginBot5">
                             <label style="flex:1;"><strong>Number of Options:</strong> <span id="cs_num_val">${settings.numOptions}</span></label>
-                            <input type="range" id="cs_num" style="flex:1;" value="${settings.numOptions}" min="1" max="10">
+                            <input type="range" id="cs_num" style="flex:1;" value="${settings.numOptions}" min="1" max="12">
                         </div>
 
                         <div class="flex-container marginBot5 justifySpaceBetween">
@@ -1434,9 +1434,18 @@ import { DEFAULT_SETTINGS } from './defaults.js';
                         <div class="flex-container flexFlowColumn marginBot5" style="border-left: 2px solid var(--SmartThemeBorderColor); padding-left: 10px;">
                             <div class="flex-container alignitemscenter justifySpaceBetween">
                                 <label><strong>Option Tone Matrix</strong></label>
-                                <div style="display:flex; gap: 4px;">
-                                    <div id="cs_import_matrix_file" class="menu_button interactable cs-touch-btn margin0" tabindex="0" role="button" style="padding: 2px 8px; font-size: 0.85rem;" title="Import from Text File (.txt)">
-                                        <i class="fa-solid fa-file-import"></i> Import (.txt)
+                                <div style="display:flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end;">
+                                    <div id="cs_export_matrix" class="menu_button interactable cs-touch-btn margin0" tabindex="0" role="button" style="padding: 2px 8px; font-size: 0.85rem;" title="Export Matrix to Clipboard">
+                                        <i class="fa-solid fa-copy"></i> Copy
+                                    </div>
+                                    <div id="cs_export_matrix_file" class="menu_button interactable cs-touch-btn margin0" tabindex="0" role="button" style="padding: 2px 8px; font-size: 0.85rem;" title="Export Matrix to JSON file">
+                                        <i class="fa-solid fa-file-export"></i> Export
+                                    </div>
+                                    <div id="cs_import_matrix" class="menu_button interactable cs-touch-btn margin0" tabindex="0" role="button" style="padding: 2px 8px; font-size: 0.85rem;" title="Import Matrix from Clipboard">
+                                        <i class="fa-solid fa-paste"></i> Paste
+                                    </div>
+                                    <div id="cs_import_matrix_file" class="menu_button interactable cs-touch-btn margin0" tabindex="0" role="button" style="padding: 2px 8px; font-size: 0.85rem;" title="Import Matrix from JSON file">
+                                        <i class="fa-solid fa-file-import"></i> Import
                                     </div>
                                     <div id="cs_add_matrix" class="menu_button interactable cs-touch-btn margin0" tabindex="0" role="button" style="padding: 2px 8px; font-size: 0.85rem;">
                                         <i class="fa-solid fa-plus"></i> Add
@@ -1484,15 +1493,21 @@ import { DEFAULT_SETTINGS } from './defaults.js';
             icon.toggleClass('fa-circle-chevron-down fa-circle-chevron-up');
         });
 
-        const chkMap = ['cs_active', 'cs_skip_interrupt', 'cs_include_summary', 'cs_dynamic_matrix'];
-        chkMap.forEach(id => {
-            $(`#${id}`).on("change", function() { 
-                const key = id.replace("cs_", "");
-                settings[key] = this.checked; 
-                if (id === 'cs_dynamic_matrix') updateMatrixUI(); 
-                save(); 
+        // Fixed Checkbox Mapping Bug
+        const chkMap = {
+            'cs_active': 'enabled',
+            'cs_skip_interrupt': 'skipInterrupted',
+            'cs_debug_mode': 'debugMode',
+            'cs_include_summary': 'includeSummary',
+            'cs_dynamic_matrix': 'dynamicMatrix'
+        };
+        for (const [id, key] of Object.entries(chkMap)) {
+            $(`#${id}`).on("change", function() {
+                settings[key] = this.checked;
+                if (id === 'cs_dynamic_matrix') updateMatrixUI();
+                save();
             });
-        });
+        }
         
         $(`#cs_instruction_prompt`).on("input", function() { settings.instructionPrompt = this.value; save(); });
         $(`#cs_custom_db_path`).on("input", function() { settings.custom_db_path = this.value; save(); });
@@ -1510,7 +1525,8 @@ import { DEFAULT_SETTINGS } from './defaults.js';
             "cs_width": ["widget_width", "--cs-panel-width", "vw"],
             "cs_height_choices": ["choice_block_max_height", "--cs-choices-height", "vh"],
             "cs_width_modal": ["modal_width", "--cs-modal-width", "vw"],
-            "cs_height_modal": ["modal_height", "--cs-modal-height", "vh"]
+            "cs_height_modal": ["modal_height", "--cs-modal-height", "vh"],
+            "cs_start_modal": ["modal_start", "--cs-modal-start", "vh"]
         };
 
         for (const [id, [setKey, cssVar, unit]] of Object.entries(sliderMap)) {
@@ -1546,6 +1562,7 @@ import { DEFAULT_SETTINGS } from './defaults.js';
         });
 
         updateMatrixUI();
+        
         $("#cs_add_matrix").on("click", (e) => {
             e.stopPropagation();
             settings.matrix.push({ range: "1", text: "New matrix rule" });
@@ -1553,31 +1570,60 @@ import { DEFAULT_SETTINGS } from './defaults.js';
             save();
         });
         
+        $("#cs_export_matrix").on("click", (e) => {
+            e.stopPropagation();
+            navigator.clipboard.writeText(JSON.stringify(settings.matrix, null, 2))
+                .then(() => { if (window.toastr) window.toastr.success("Matrix copied to clipboard!", "Export Success"); });
+        });
+
+        $("#cs_export_matrix_file").on("click", (e) => {
+            e.stopPropagation();
+            const blob = new Blob([JSON.stringify(settings.matrix, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.download = `choices_matrix_${Date.now()}.json`;
+            a.href = url;
+            a.click();
+            URL.revokeObjectURL(url);
+            if (window.toastr) window.toastr.success("Matrix exported to file!", "Export Success");
+        });
+        
+        $("#cs_import_matrix").on("click", async (e) => {
+            e.stopPropagation();
+            try {
+                const text = await navigator.clipboard.readText();
+                const parsed = JSON.parse(text);
+                if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].range && parsed[0].text) {
+                    settings.matrix = parsed;
+                    updateMatrixUI();
+                    save();
+                    if (window.toastr) window.toastr.success("Matrix imported successfully!", "Import Success");
+                } else throw new Error();
+            } catch (err) {
+                if (window.toastr) window.toastr.error("Invalid matrix format in clipboard.", "Import Failed");
+            }
+        });
+
         $("#cs_import_matrix_file").on("click", (e) => {
             e.stopPropagation();
             const input = document.createElement('input');
             input.type = 'file';
-            input.accept = '.txt';
-            input.onchange = e => {
-                const file = e.target.files[0];
+            input.accept = '.json';
+            input.onchange = ev => {
+                const file = ev.target.files[0];
                 if (!file) return;
                 const reader = new FileReader();
                 reader.onload = event => {
-                    const lines = event.target.result.split('\n');
-                    let added = 0;
-                    lines.forEach(line => {
-                        let match = line.match(/^([\d\s\-,]+)[\s:|-]+(.+)$/);
-                        if (match) {
-                            settings.matrix.push({ range: match[1].trim(), text: match[2].trim() });
-                            added++;
-                        }
-                    });
-                    if (added > 0) {
-                        if (window.toastr) window.toastr.success(`Imported ${added} rules!`, "Matrix");
-                        updateMatrixUI();
-                        save();
-                    } else {
-                        if (window.toastr) window.toastr.warning("No valid rules found in file.", "Matrix");
+                    try {
+                        const parsed = JSON.parse(event.target.result);
+                        if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].range && parsed[0].text) {
+                            settings.matrix = parsed;
+                            updateMatrixUI();
+                            save();
+                            if (window.toastr) window.toastr.success("Matrix imported from file!", "Import Success");
+                        } else throw new Error();
+                    } catch (err) {
+                        if (window.toastr) window.toastr.error("Invalid matrix format in file.", "Import Failed");
                     }
                 };
                 reader.readAsText(file);
@@ -1600,7 +1646,6 @@ import { DEFAULT_SETTINGS } from './defaults.js';
     }
 
     function save() {
-        // Must grab live context to debounce correctly without clearing it.
         const liveContext = getContext();
         liveContext.extensionSettings[MODULE_NAME] = settings;
         if (liveContext.saveSettingsDebounced) liveContext.saveSettingsDebounced();
