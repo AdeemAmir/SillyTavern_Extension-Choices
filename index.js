@@ -589,7 +589,8 @@ Strict Format Example Template:
                             ${cluster.ai_context ? `
                             <div style="font-size:0.8rem; background:rgba(0,0,0,0.3); padding:8px; border-radius:4px; border-left:3px solid #8b5cf6;">
                                 <b style="color:#a78bfa;">AI Context Snippet:</b>
-                                <div style="margin-top:4px; max-height:80px; overflow-y:auto; opacity:0.85;">${formatPreview(cluster.ai_context).replace(/</g, '&lt;')}</div>
+                                <div style="margin-top:4px; max-height:80px; overflow-y:auto; opacity:0.85; transition: max-height 0.3s;" class="cs-ai-context-container">${formatPreview(cluster.ai_context).replace(/</g, '&lt;')}</div>
+                                <button class="cs-view-context-btn menu_button cs-touch-btn margin0" data-context="${encodeURIComponent(cluster.ai_context)}" data-expanded="false" style="padding:4px 8px; font-size:0.75rem; margin-top:6px; color:#a78bfa;"><i class="fa-solid fa-eye"></i> View Full AI Context</button>
                             </div>` : ''}
                             
                             ${choicesArray.map((c, i) => `
@@ -628,6 +629,24 @@ Strict Format Example Template:
                 const isOpen = details.style.display === 'flex';
                 details.style.display = isOpen ? 'none' : 'flex';
                 toggle.innerHTML = isOpen ? '<i class="fa-solid fa-chevron-down"></i> Inspect Full Options & Context' : '<i class="fa-solid fa-chevron-up"></i> Hide Full Options';
+                return;
+            }
+
+            const viewCtxBtn = e.target.closest('.cs-view-context-btn');
+            if (viewCtxBtn) {
+                const container = viewCtxBtn.previousElementSibling;
+                const fullText = decodeURIComponent(viewCtxBtn.getAttribute('data-context'));
+                if (viewCtxBtn.getAttribute('data-expanded') === 'true') {
+                    container.innerHTML = formatPreview(fullText).replace(/</g, '&lt;');
+                    container.style.maxHeight = '80px';
+                    viewCtxBtn.innerHTML = '<i class="fa-solid fa-eye"></i> View Full AI Context';
+                    viewCtxBtn.setAttribute('data-expanded', 'false');
+                } else {
+                    container.innerHTML = fullText.replace(/</g, '&lt;').replace(/\n/g, '<br>');
+                    container.style.maxHeight = 'none';
+                    viewCtxBtn.innerHTML = '<i class="fa-solid fa-eye-slash"></i> Hide Full AI Context';
+                    viewCtxBtn.setAttribute('data-expanded', 'true');
+                }
                 return;
             }
 
@@ -684,7 +703,7 @@ Strict Format Example Template:
         $('#cs_hist_search_input').on('input', function() {
             const val = this.value;
             clearTimeout(window.__cs_search_timer);
-            window.__cs_search_timer = setTimeout(() => { showHistoryModal($('#cs_hist_chat_select').val(), val); }, 1000);
+            window.__cs_search_timer = setTimeout(() => { showHistoryModal($('#cs_hist_chat_select').val(), val); }, 1500);
         });
 
         document.getElementById('cs_hist_clearall_btn').onclick = async () => {
@@ -767,8 +786,11 @@ Strict Format Example Template:
                                 <button class="menu_button cs-touch-btn cs-fail-del-btn margin0" data-id="${fail.id}" style="color:#ef4444;"><i class="fa-solid fa-trash"></i></button>
                             </div>
                         </div>
-                        ${fail.ai_context ? `<div style="font-size: 0.82rem; color: #cbd5e1; margin-bottom: 8px; font-style: italic; border-left: 2px solid #ef4444; padding-left: 6px;">
-                            <b>Failed context snippet:</b> "${formatPreview(fail.ai_context).replace(/</g, '&lt;')}"
+                        ${fail.ai_context ? `
+                        <div style="font-size: 0.82rem; color: #cbd5e1; margin-bottom: 8px; background: rgba(239, 68, 68, 0.1); border-left: 2px solid #ef4444; padding: 8px; border-radius: 4px;">
+                            <b>Failed Context Snippet:</b>
+                            <div style="margin-top:4px; max-height:80px; overflow-y:auto; opacity:0.85; transition: max-height 0.3s;" class="cs-ai-context-container">${formatPreview(fail.ai_context).replace(/</g, '&lt;')}</div>
+                            <button class="cs-view-context-btn menu_button cs-touch-btn margin0" data-context="${encodeURIComponent(fail.ai_context)}" data-expanded="false" style="padding:4px 8px; font-size:0.75rem; margin-top:6px; color:#f87171;"><i class="fa-solid fa-eye"></i> View Full AI Context</button>
                         </div>` : ''}
                         <div class="cs-failed-item">${rawString.replace(/</g, '&lt;')}</div>
                     </div>
@@ -786,6 +808,24 @@ Strict Format Example Template:
         renderChunk();
 
         bodyContainer.addEventListener('click', async (e) => {
+            const viewCtxBtn = e.target.closest('.cs-view-context-btn');
+            if (viewCtxBtn) {
+                const container = viewCtxBtn.previousElementSibling;
+                const fullText = decodeURIComponent(viewCtxBtn.getAttribute('data-context'));
+                if (viewCtxBtn.getAttribute('data-expanded') === 'true') {
+                    container.innerHTML = formatPreview(fullText).replace(/</g, '&lt;');
+                    container.style.maxHeight = '80px';
+                    viewCtxBtn.innerHTML = '<i class="fa-solid fa-eye"></i> View Full AI Context';
+                    viewCtxBtn.setAttribute('data-expanded', 'false');
+                } else {
+                    container.innerHTML = fullText.replace(/</g, '&lt;').replace(/\n/g, '<br>');
+                    container.style.maxHeight = 'none';
+                    viewCtxBtn.innerHTML = '<i class="fa-solid fa-eye-slash"></i> Hide Full AI Context';
+                    viewCtxBtn.setAttribute('data-expanded', 'true');
+                }
+                return;
+            }
+
             const copyBtn = e.target.closest('.cs-fail-copy-btn');
             if (copyBtn) {
                 const text = decodeURIComponent(copyBtn.getAttribute('data-text'));
@@ -1325,7 +1365,7 @@ Strict Format Example Template:
     }
 
     function renderSettingsMenu() {
-        if (document.getElementById("cs_active_setting_row")) return true; 
+        if (document.getElementById("cs_active")) return true; 
         const target = document.getElementById("extensions_settings") || document.getElementById("extensions_settings2");
         if (!target) return false;
 
@@ -1338,18 +1378,18 @@ Strict Format Example Template:
                     </div>
                     <div class="cs-drawer-content" style="display: none; padding-top: 10px;">
                         
-                        <div id="cs_active_setting_row" class="flex-container marginBot5 justifySpaceBetween">
-                            <label class="checkbox_label flex-container" title="Automatically generate choices after AI replies">
+                        <div class="flex-container marginBot5" style="gap:10px; flex-wrap:wrap;">
+                            <label class="checkbox_label flex-container">
                                 <input type="checkbox" id="cs_active" ${settings.enabled ? "checked" : ""}>
-                                <span>Auto-Gen Choices</span>
+                                <span>Auto-generate Choices</span>
                             </label>
-                            <label class="checkbox_label flex-container" title="Skip generation if you interrupted the AI">
+                            <label class="checkbox_label flex-container">
                                 <input type="checkbox" id="cs_skip_interrupt" ${settings.skipInterrupted ? "checked" : ""}>
                                 <span>Skip on Interrupt</span>
                             </label>
-                            <label class="checkbox_label flex-container" title="Enable Console Logging for debugging Prompts & Outputs">
-                                <input type="checkbox" id="cs_debug_mode" ${settings.debugMode ? "checked" : ""}>
-                                <span>Console Logging</span>
+                            <label class="checkbox_label flex-container" title="Logs prompts and parsing info to the F12 Console">
+                                <input type="checkbox" id="cs_debugMode" ${settings.debugMode ? "checked" : ""}>
+                                <span style="color:#10b981;">Console Debug Logging</span>
                             </label>
                         </div>
                         
@@ -1493,21 +1533,22 @@ Strict Format Example Template:
             icon.toggleClass('fa-circle-chevron-down fa-circle-chevron-up');
         });
 
-        // Fixed Checkbox Mapping Bug
+        // FIX: Reverted to explicit dictionary map so IDs map exactly to camelCase settings keys
         const chkMap = {
             'cs_active': 'enabled',
             'cs_skip_interrupt': 'skipInterrupted',
-            'cs_debug_mode': 'debugMode',
             'cs_include_summary': 'includeSummary',
-            'cs_dynamic_matrix': 'dynamicMatrix'
+            'cs_dynamic_matrix': 'dynamicMatrix',
+            'cs_debugMode': 'debugMode'
         };
-        for (const [id, key] of Object.entries(chkMap)) {
-            $(`#${id}`).on("change", function() {
-                settings[key] = this.checked;
-                if (id === 'cs_dynamic_matrix') updateMatrixUI();
-                save();
+
+        Object.entries(chkMap).forEach(([id, key]) => {
+            $(`#${id}`).on("change", function() { 
+                settings[key] = this.checked; 
+                if (id === 'cs_dynamic_matrix') updateMatrixUI(); 
+                save(); 
             });
-        }
+        });
         
         $(`#cs_instruction_prompt`).on("input", function() { settings.instructionPrompt = this.value; save(); });
         $(`#cs_custom_db_path`).on("input", function() { settings.custom_db_path = this.value; save(); });
