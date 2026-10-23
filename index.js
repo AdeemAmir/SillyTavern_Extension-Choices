@@ -9,7 +9,7 @@ import { getContext } from '../../../extensions.js';
 
 (function () {
     const MODULE_NAME = "SillyTavern_Extension-Choices";
-    const MODULE_VERSION = "2.3.0"; // Version updated
+    const MODULE_VERSION = "2.3.1"; // Version updated with llama.cpp & TunnelVision fix
     const API_BASE = "/api/plugins/sillytavern_extension-choices"; 
     
     // --- V2.3.0 DEFAULT PROMPTS & MATRIX ---
@@ -277,6 +277,57 @@ Strict Format Example Template:
         });
         
         eventSource.on(event_types.MESSAGE_SENT, clearUI);
+
+        // --- FIX FOR LLAMA.CPP JINJA TEMPLATE & TUNNELVISION ROLES ---
+        if (event_types.CHAT_COMPLETION_PROMPT_READY) {
+            eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, (data) => {
+                if (!isGenerating || !data || !Array.isArray(data.chat)) return;
+
+                // 1. Convert any 'tool' or non-standard roles injected by TunnelVision/ST
+                for (let i = 0; i < data.chat.length; i++) {
+                    const msg = data.chat[i];
+                    if (!msg) continue;
+
+                    // Strip tool_calls metadata from assistant messages so llama.cpp doesn't expect a tool turn
+                    if (msg.tool_calls) delete msg.tool_calls;
+                    if (msg.tool_call_id) delete msg.tool_call_id;
+
+                    if (!['user', 'system', 'assistant'].includes(msg.role)) {
+                        msg.role = 'user';
+                        if (typeof msg.content === 'string') {
+                            msg.content = `[Context Data]:\n${msg.content}`;
+                        }
+                    }
+                }
+
+                // 2. Ensure the final quietPrompt instruction is 'user' role (prevents trailing-system Jinja errors)
+                if (data.chat.length > 0) {
+                    const lastMsg = data.chat[data.chat.length - 1];
+                    if (lastMsg.role === 'system') {
+                        lastMsg.role = 'user';
+                    }
+                }
+
+                // 3. Merge consecutive messages of the same role to satisfy strict alternation templates
+                for (let i = data.chat.length - 1; i > 0; i--) {
+                    if (data.chat[i].role === data.chat[i - 1].role) {
+                        const prevContent = typeof data.chat[i - 1].content === 'string' ? data.chat[i - 1].content : JSON.stringify(data.chat[i - 1].content);
+                        const currContent = typeof data.chat[i].content === 'string' ? data.chat[i].content : JSON.stringify(data.chat[i].content);
+                        data.chat[i - 1].content = `${prevContent}\n\n${currContent}`;
+                        data.chat.splice(i, 1);
+                    }
+                }
+            });
+        }
+
+        if (event_types.CHAT_COMPLETION_SETTINGS_READY) {
+            eventSource.on(event_types.CHAT_COMPLETION_SETTINGS_READY, (settingsObj) => {
+                if (!isGenerating || !settingsObj) return;
+                // Prevent TunnelVision from triggering lorebook tool-calls during background choice generation
+                delete settingsObj.tools;
+                delete settingsObj.tool_choice;
+            });
+        }
     }
 
     function setupInputTracker() {
@@ -1142,7 +1193,12 @@ Strict Format Example Template:
 
     async function fetchRaw(compiledPrompt) {
         log(`SENDING QUIET PROMPT:\n${compiledPrompt}`, 2);
-        let rawResponse = await generateQuietPrompt({ quietPrompt: compiledPrompt, skipWIAN: false, removeReasoning: true });
+        let rawResponse = await generateQuietPrompt({ 
+            quietPrompt: compiledPrompt, 
+            quietToLoud: true,
+            skipWIAN: false, 
+            removeReasoning: true 
+        });
         if (!rawResponse || rawResponse.trim() === "") throw new Error("Empty response from ST Proxy");
         log(`RAW LLM RESPONSE:\n${rawResponse}`, 2);
         return rawResponse;
